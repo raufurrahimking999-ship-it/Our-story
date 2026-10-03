@@ -46,18 +46,21 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Add/Sync Capacitor Android Platform
+      - name: Sync Capacitor Android Platform
         run: |
-          if [ ! -d "android" ] || [ ! -f "android/gradlew" ]; then
+          if [ ! -d "android" ]; then
             npx cap add android
           fi
           npx cap sync android
 
-      - name: Grant Execute Permission for Gradlew
+      - name: Ensure Gradle Wrapper and Permissions
         run: |
-          if [ -f "android/gradlew" ]; then
-            chmod +x android/gradlew
+          if [ ! -f "android/gradlew" ]; then
+            cd android
+            gradle wrapper
+            cd ..
           fi
+          chmod +x android/gradlew
 
       - name: Build Android Debug APK with Gradle
         run: |
