@@ -1,0 +1,23 @@
+const config = {
+  appId: 'com.heartbeat.lovecounter',
+  appName: 'Our Little Story',
+  webDir: 'dist',
+  backgroundColor: '#040711',
+  android: {
+    backgroundColor: '#040711',
+    allowMixedContent: true,
+  },
+  plugins: {
+    SplashScreen: {
+      launchShowDuration: 0,
+      launchAutoHide: true,
+      launchFadeOutDuration: 0,
+      backgroundColor: '#040711',
+      showSpinner: false,
+      splashFullScreen: true,
+      splashImmersive: true,
+    },
+  },
+};
+
+export default config;
