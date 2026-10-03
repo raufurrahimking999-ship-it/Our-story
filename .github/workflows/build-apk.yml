@@ -46,9 +46,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Sync Capacitor Android Platform
+      - name: Restore or Sync Capacitor Android Platform
         run: |
-          if [ ! -d "android" ]; then
+          if [ ! -d "android" ] || [ ! -f "android/gradlew" ]; then
+            echo "Capacitor Android platform or gradlew missing. Restoring Android platform..."
+            rm -rf android
             npx cap add android
           fi
           npx cap sync android
