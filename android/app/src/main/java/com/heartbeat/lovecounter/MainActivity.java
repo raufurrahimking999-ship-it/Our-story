@@ -8,6 +8,7 @@ import android.os.Build;
 import android.provider.Settings;
 import androidx.core.content.ContextCompat;
 import android.content.pm.PackageManager;
+import androidx.core.app.ActivityCompat;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -52,12 +53,13 @@ class PermissionBridgePlugin extends Plugin {
     public void checkAudioPermission(PluginCall call) {
         JSObject ret = new JSObject();
         String status = "prompt";
+        android.app.Activity activity = getActivity();
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             int result = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.READ_MEDIA_AUDIO);
             if (result == PackageManager.PERMISSION_GRANTED) {
                 status = "granted";
-            } else if (shouldShowRequestPermissionRationale(Manifest.permission.READ_MEDIA_AUDIO)) {
+            } else if (activity != null && ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.READ_MEDIA_AUDIO)) {
                 status = "prompt";
             } else {
                 status = "denied";
@@ -66,7 +68,7 @@ class PermissionBridgePlugin extends Plugin {
             int result = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.READ_EXTERNAL_STORAGE);
             if (result == PackageManager.PERMISSION_GRANTED) {
                 status = "granted";
-            } else if (shouldShowRequestPermissionRationale(Manifest.permission.READ_EXTERNAL_STORAGE)) {
+            } else if (activity != null && ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.READ_EXTERNAL_STORAGE)) {
                 status = "prompt";
             } else {
                 status = "denied";
