@@ -261,34 +261,71 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
     return true;
   }).sort((a, b) => b.dateAdded - a.dateAdded);
 
-  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const [isUploading, setIsUploading] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      setTimeout(() => {
+        vaultService.setFilePicking(false);
+      }, 1000);
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
+
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files || files.length === 0) return;
+    if (!files || files.length === 0) {
+      vaultService.setFilePicking(false);
+      return;
+    }
 
-    Array.from(files).forEach((file) => {
-      const isVideo = file.type.startsWith('video');
-      const isImage = file.type.startsWith('image');
-      if (!isVideo && !isImage) return;
+    setIsUploading(true);
+    setErrorMsg('');
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const dataUrl = event.target?.result as string;
-        if (dataUrl) {
-          vaultService.addVaultItem({
-            folderId: activeFolderId === 'root' ? undefined : activeFolderId || undefined,
-            type: isVideo ? 'video' : 'image',
-            dataUrl,
-            name: file.name,
-            size: file.size,
-          });
-          refreshData();
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+    try {
+      const fileList = Array.from(files);
+      for (const file of fileList) {
+        const isVideo = file.type.startsWith('video');
+        const isImage = file.type.startsWith('image');
+        const fileType: 'image' | 'video' | 'file' = isVideo ? 'video' : isImage ? 'image' : 'file';
 
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+        await new Promise<void>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = async (event) => {
+            const dataUrl = event.target?.result as string;
+            if (dataUrl) {
+              const success = await vaultService.addVaultItem({
+                folderId: activeFolderId === 'root' ? undefined : activeFolderId || undefined,
+                type: fileType,
+                dataUrl,
+                name: file.name,
+                size: file.size,
+              });
+              if (!success) {
+                setErrorMsg('Could not save file. Storage may be full.');
+              }
+              resolve();
+            } else {
+              reject(new Error('Failed to read file content'));
+            }
+          };
+          reader.onerror = () => reject(new Error('File reading error'));
+          reader.readAsDataURL(file);
+        });
+      }
+      refreshData();
+    } catch (err: any) {
+      console.error('File import error:', err);
+      setErrorMsg(err.message || 'Error uploading file.');
+    } finally {
+      setIsUploading(false);
+      setTimeout(() => {
+        vaultService.setFilePicking(false);
+      }, 500);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -359,9 +396,9 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
     setModalAction('confirm-delete');
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (selectedItemIds.length === 0) return;
-    const success = vaultService.deleteVaultItemsBatch(selectedItemIds);
+    const success = await vaultService.deleteVaultItemsBatch(selectedItemIds);
     if (success) {
       setSelectedItemIds([]);
       setIsSelectMode(false);
@@ -373,9 +410,9 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
     }
   };
 
-  const handleConfirmDeleteSingle = () => {
+  const handleConfirmDeleteSingle = async () => {
     if (!targetItemForModal) return;
-    const success = vaultService.deleteVaultItem(targetItemForModal.id);
+    const success = await vaultService.deleteVaultItem(targetItemForModal.id);
     if (success) {
       setModalAction(null);
       setTargetItemForModal(null);
@@ -646,7 +683,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,video/*"
+        accept="image/*,video/*,application/*,text/*"
         multiple
         onChange={handleFileImport}
         className="hidden"
@@ -750,11 +787,20 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
             <>
               {/* Add Media (+) */}
               <button
-                onClick={() => fileInputRef.current?.click()}
-                className="p-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 transition-colors shadow-[0_0_15px_rgba(99,102,241,0.3)]"
-                title="Add Photos or Videos"
+                type="button"
+                onClick={() => {
+                  vaultService.setFilePicking(true);
+                  fileInputRef.current?.click();
+                }}
+                disabled={isUploading}
+                className="p-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 transition-colors shadow-[0_0_15px_rgba(99,102,241,0.3)] disabled:opacity-50"
+                title="Add Photos, Videos or Files"
               >
-                <Plus className="w-4 h-4" />
+                {isUploading ? (
+                  <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <Plus className="w-4 h-4" />
+                )}
               </button>
 
               {/* Toggle Search */}

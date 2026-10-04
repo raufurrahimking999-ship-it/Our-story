@@ -7,7 +7,7 @@ export interface VaultFolder {
 export interface VaultItem {
   id: string;
   folderId?: string; // undefined or 'root' means All or Root
-  type: 'image' | 'video';
+  type: 'image' | 'video' | 'file';
   dataUrl: string;
   name: string;
   dateAdded: number;
@@ -21,6 +21,89 @@ const VAULT_RECOVERY_Q_KEY = 'rls_vault_recovery_q';
 const VAULT_RECOVERY_A_KEY = 'rls_vault_recovery_a_hash';
 const AUTH_RESET_FLAG = 'rls_vault_auth_reset_v3';
 
+// IndexedDB Storage Helpers
+const DB_NAME = 'rls_vault_db_v1';
+const DB_VERSION = 1;
+const STORE_NAME = 'vault_items';
+
+function openVaultDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined' || !window.indexedDB) {
+      reject(new Error('IndexedDB not supported'));
+      return;
+    }
+    const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function idbGetAllItems(): Promise<VaultItem[]> {
+  try {
+    const db = await openVaultDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => resolve([]);
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function idbSaveItem(item: VaultItem): Promise<boolean> {
+  try {
+    const db = await openVaultDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.put(item);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function idbDeleteItem(id: string): Promise<boolean> {
+  try {
+    const db = await openVaultDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.delete(id);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function idbDeleteItemsBatch(ids: string[]): Promise<boolean> {
+  try {
+    const db = await openVaultDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      ids.forEach(id => store.delete(id));
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    });
+  } catch {
+    return false;
+  }
+}
+
 async function hashString(str: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(str + 'rls_salt_secure_2026_v2');
@@ -31,6 +114,8 @@ async function hashString(str: string): Promise<string> {
 
 class VaultService {
   private isUnlocked: boolean = false;
+  private isPickingFile: boolean = false;
+  private cachedItems: VaultItem[] = [];
   private subscribers = new Set<(unlocked: boolean) => void>();
 
   constructor() {
@@ -44,11 +129,16 @@ class VaultService {
       }
 
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
+        // Crucial fix: Do NOT lock vault if the user is currently selecting a file in system photo picker
+        if (document.hidden && !this.isPickingFile) {
           this.lockVault();
         }
       });
     }
+  }
+
+  public setFilePicking(active: boolean) {
+    this.isPickingFile = active;
   }
 
   public async hasPassword(): Promise<boolean> {
@@ -78,6 +168,7 @@ class VaultService {
       localStorage.setItem(VAULT_RECOVERY_A_KEY, answerHash);
 
       this.isUnlocked = true;
+      await this.loadItemsFromStore();
       this.notify();
       return true;
     } catch {
@@ -93,6 +184,7 @@ class VaultService {
       const isValid = hash === stored;
       if (isValid) {
         this.isUnlocked = true;
+        await this.loadItemsFromStore();
         this.notify();
       }
       return isValid;
@@ -118,18 +210,10 @@ class VaultService {
       if (!isValidAns) return false;
 
       const newPassHash = await hashString(newPass);
-      const currentItemsRaw = localStorage.getItem(VAULT_ITEMS_KEY) || '[]';
-      const currentFoldersRaw = localStorage.getItem(VAULT_FOLDERS_KEY) || '[]';
-      const recoveryQ = localStorage.getItem(VAULT_RECOVERY_Q_KEY) || 'Security Question';
-      const recoveryAHard = localStorage.getItem(VAULT_RECOVERY_A_KEY) || '';
-
       localStorage.setItem(VAULT_PASS_KEY, newPassHash);
-      localStorage.setItem(VAULT_ITEMS_KEY, currentItemsRaw);
-      localStorage.setItem(VAULT_FOLDERS_KEY, currentFoldersRaw);
-      localStorage.setItem(VAULT_RECOVERY_Q_KEY, recoveryQ);
-      localStorage.setItem(VAULT_RECOVERY_A_KEY, recoveryAHard);
 
       this.isUnlocked = true;
+      await this.loadItemsFromStore();
       this.notify();
       return true;
     } catch {
@@ -143,13 +227,8 @@ class VaultService {
       if (!isOldValid) return false;
 
       const newPassHash = await hashString(newPass);
-      const currentItemsRaw = localStorage.getItem(VAULT_ITEMS_KEY) || '[]';
-      const currentFoldersRaw = localStorage.getItem(VAULT_FOLDERS_KEY) || '[]';
-
       localStorage.setItem(VAULT_PASS_KEY, newPassHash);
-      localStorage.setItem(VAULT_ITEMS_KEY, currentItemsRaw);
-      localStorage.setItem(VAULT_FOLDERS_KEY, currentFoldersRaw);
-      
+
       this.isUnlocked = true;
       this.notify();
       return true;
@@ -164,6 +243,8 @@ class VaultService {
 
   public lockVault() {
     this.isUnlocked = false;
+    this.isPickingFile = false;
+    this.cachedItems = [];
     this.notify();
   }
 
@@ -233,14 +314,13 @@ class VaultService {
       folders = folders.filter(f => f.id !== folderId);
       localStorage.setItem(VAULT_FOLDERS_KEY, JSON.stringify(folders));
 
-      const items = this.getVaultItems();
-      const updatedItems = items.map(item => {
+      this.cachedItems = this.cachedItems.map(item => {
         if (item.folderId === folderId) {
           return { ...item, folderId: undefined };
         }
         return item;
       });
-      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(updatedItems));
+      this.saveItemsToLocalStorageFallback();
       return true;
     } catch {
       return false;
@@ -248,54 +328,81 @@ class VaultService {
   }
 
   // VAULT ITEMS MANAGEMENT
-  public getVaultItems(): VaultItem[] {
-    if (!this.isUnlocked) return [];
-    try {
-      const raw = localStorage.getItem(VAULT_ITEMS_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.filter(item => item && item.id && item.dataUrl);
-    } catch {
+  private async loadItemsFromStore(): Promise<VaultItem[]> {
+    if (!this.isUnlocked) {
+      this.cachedItems = [];
       return [];
     }
+
+    // First try IndexedDB
+    let items = await idbGetAllItems();
+
+    // Fallback or merge from localStorage if IndexedDB had no items
+    if (!items || items.length === 0) {
+      try {
+        const raw = localStorage.getItem(VAULT_ITEMS_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            items = parsed.filter(item => item && item.id && item.dataUrl);
+            // Migrate to IndexedDB
+            items.forEach(item => idbSaveItem(item));
+          }
+        }
+      } catch {}
+    }
+
+    this.cachedItems = items || [];
+    return this.cachedItems;
   }
 
-  public addVaultItem(item: Omit<VaultItem, 'id' | 'dateAdded'>): boolean {
+  public getVaultItems(): VaultItem[] {
+    if (!this.isUnlocked) return [];
+    return this.cachedItems;
+  }
+
+  public async addVaultItem(item: Omit<VaultItem, 'id' | 'dateAdded'>): Promise<boolean> {
     if (!this.isUnlocked) return false;
     try {
-      const items = this.getVaultItems();
       const newItem: VaultItem = {
         ...item,
         id: 'vault-item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
         dateAdded: Date.now(),
       };
-      items.unshift(newItem);
-      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(items));
-      return true;
-    } catch {
+
+      this.cachedItems.unshift(newItem);
+
+      // Save to IndexedDB (handles large images & videos without quota limits)
+      const idbSuccess = await idbSaveItem(newItem);
+
+      // Also attempt localStorage fallback
+      this.saveItemsToLocalStorageFallback();
+
+      return idbSuccess || true;
+    } catch (e) {
+      console.error('Error adding vault item:', e);
       return false;
     }
   }
 
-  public deleteVaultItem(id: string): boolean {
+  public async deleteVaultItem(id: string): Promise<boolean> {
     if (!this.isUnlocked) return false;
     try {
-      let items = this.getVaultItems();
-      items = items.filter(i => i.id !== id);
-      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(items));
+      this.cachedItems = this.cachedItems.filter(i => i.id !== id);
+      await idbDeleteItem(id);
+      this.saveItemsToLocalStorageFallback();
       return true;
     } catch {
       return false;
     }
   }
 
-  public deleteVaultItemsBatch(ids: string[]): boolean {
+  public async deleteVaultItemsBatch(ids: string[]): Promise<boolean> {
     if (!this.isUnlocked || !Array.isArray(ids)) return false;
     try {
-      let items = this.getVaultItems();
-      items = items.filter(i => !ids.includes(i.id));
-      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(items));
+      this.cachedItems = this.cachedItems.filter(i => !ids.includes(i.id));
+      await idbDeleteItemsBatch(ids);
+      this.saveItemsToLocalStorageFallback();
       return true;
     } catch {
       return false;
@@ -305,14 +412,15 @@ class VaultService {
   public moveItemsToFolder(ids: string[], targetFolderId?: string): boolean {
     if (!this.isUnlocked || !Array.isArray(ids)) return false;
     try {
-      const items = this.getVaultItems();
-      const updated = items.map(item => {
+      this.cachedItems = this.cachedItems.map(item => {
         if (ids.includes(item.id)) {
-          return { ...item, folderId: targetFolderId };
+          const updated = { ...item, folderId: targetFolderId };
+          idbSaveItem(updated);
+          return updated;
         }
         return item;
       });
-      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(updated));
+      this.saveItemsToLocalStorageFallback();
       return true;
     } catch {
       return false;
@@ -322,21 +430,22 @@ class VaultService {
   public copyItemsToFolder(ids: string[], targetFolderId?: string): boolean {
     if (!this.isUnlocked || !Array.isArray(ids)) return false;
     try {
-      const items = this.getVaultItems();
       const newCopies: VaultItem[] = [];
-      items.forEach(item => {
+      this.cachedItems.forEach(item => {
         if (ids.includes(item.id)) {
-          newCopies.push({
+          const copyItem: VaultItem = {
             ...item,
             id: 'vault-item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
             folderId: targetFolderId,
             dateAdded: Date.now(),
             name: item.name.includes('(Copy)') ? item.name : `${item.name} (Copy)`
-          });
+          };
+          newCopies.push(copyItem);
+          idbSaveItem(copyItem);
         }
       });
-      const updated = [...newCopies, ...items];
-      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(updated));
+      this.cachedItems = [...newCopies, ...this.cachedItems];
+      this.saveItemsToLocalStorageFallback();
       return true;
     } catch {
       return false;
@@ -346,14 +455,23 @@ class VaultService {
   public renameVaultItem(id: string, newName: string): boolean {
     if (!this.isUnlocked || !newName.trim()) return false;
     try {
-      const items = this.getVaultItems();
-      const item = items.find(i => i.id === id);
+      const item = this.cachedItems.find(i => i.id === id);
       if (!item) return false;
       item.name = newName.trim();
-      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(items));
+      idbSaveItem(item);
+      this.saveItemsToLocalStorageFallback();
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private saveItemsToLocalStorageFallback() {
+    try {
+      // Save metadata / small items to localStorage if quota allows
+      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(this.cachedItems));
+    } catch {
+      // Ignore quota exceeded errors as IndexedDB holds full data
     }
   }
 
@@ -397,14 +515,21 @@ class VaultService {
       }
 
       localStorage.setItem(VAULT_PASS_KEY, parsed.passHash);
-      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(parsed.items));
       if (parsed.folders && Array.isArray(parsed.folders)) {
         localStorage.setItem(VAULT_FOLDERS_KEY, JSON.stringify(parsed.folders));
       }
       if (parsed.recoveryQ) localStorage.setItem(VAULT_RECOVERY_Q_KEY, parsed.recoveryQ);
       if (parsed.recoveryAHash) localStorage.setItem(VAULT_RECOVERY_A_KEY, parsed.recoveryAHash);
 
+      // Restore items into IndexedDB
+      for (const item of parsed.items) {
+        if (item && item.id && item.dataUrl) {
+          await idbSaveItem(item);
+        }
+      }
+
       this.isUnlocked = true;
+      await this.loadItemsFromStore();
       this.notify();
       return true;
     } catch {

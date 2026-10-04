@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory } from '@capacitor/filesystem';
 import { DEFAULT_LOCAL_AUDIO_PATH, RELATIONSHIP_CONFIG } from '../config';
 
 export interface SongItem {
@@ -27,62 +29,120 @@ export const FALLBACK_LOCAL_SONGS: SongItem[] = [
 
 class LocalMusicService {
   private songs: SongItem[] = [...FALLBACK_LOCAL_SONGS];
-  private permissionGranted: boolean = false;
   private subscribers = new Set<(songs: SongItem[]) => void>();
 
   constructor() {
     this.songs = [...FALLBACK_LOCAL_SONGS];
+    this.loadCustomSavedSongs();
   }
 
+  /**
+   * Scan device storage directories for audio files using Filesystem API
+   */
   public async requestPermissionAndScan(): Promise<SongItem[]> {
     try {
-      if (typeof window !== 'undefined') {
-        const win = window as any;
-        
-        // Request Android permissions via Capacitor if available
-        if (win.Capacitor && win.Capacitor.Plugins && win.Capacitor.Plugins.Permissions) {
+      const isNative = Capacitor.isNativePlatform();
+
+      if (isNative) {
+        // Try reading common music directories on Android
+        const scannedSongs: SongItem[] = [];
+        const audioExtensions = ['.mp3', '.m4a', '.wav', '.flac', '.aac', '.ogg'];
+
+        const searchDirectories = [
+          Directory.Documents,
+          Directory.ExternalStorage,
+        ];
+
+        for (const dir of searchDirectories) {
           try {
-            const permResult = await win.Capacitor.Plugins.Permissions.requestPermission({ name: 'audio' });
-            if (permResult && (permResult.status === 'granted' || permResult.granted)) {
-              this.permissionGranted = true;
+            const dirResult = await Filesystem.readdir({
+              path: '',
+              directory: dir,
+            });
+
+            if (dirResult && dirResult.files) {
+              for (const fileObj of dirResult.files) {
+                const fileName = typeof fileObj === 'string' ? fileObj : fileObj.name;
+                const lowerName = fileName.toLowerCase();
+
+                if (audioExtensions.some(ext => lowerName.endsWith(ext))) {
+                  try {
+                    const getUriRes = await Filesystem.getUri({
+                      directory: dir,
+                      path: fileName,
+                    });
+
+                    const webPath = Capacitor.convertFileSrc(getUriRes.uri);
+                    const cleanTitle = fileName.replace(/\.[^/.]+$/, '');
+
+                    scannedSongs.push({
+                      id: `scanned-${dir}-${fileName}`,
+                      title: cleanTitle,
+                      artist: 'Local Device Music',
+                      album: 'Storage Track',
+                      duration: 180,
+                      url: webPath,
+                      isBuiltIn: false,
+                    });
+                  } catch (e) {
+                    console.warn('Error reading file URI:', e);
+                  }
+                }
+              }
             }
-          } catch {
-            this.permissionGranted = true;
+          } catch (e) {
+            console.warn(`Could not read directory ${dir}:`, e);
           }
-        } else {
-          this.permissionGranted = true;
         }
 
-        // Scan device MediaStore via native plugin if available
-        if (win.Capacitor && win.Capacitor.Plugins && win.Capacitor.Plugins.LocalMusic) {
-          try {
-            const result = await win.Capacitor.Plugins.LocalMusic.getMusicLibrary();
-            if (result && Array.isArray(result.songs) && result.songs.length > 0) {
-              const nativeSongs: SongItem[] = result.songs.map((s: any, idx: number) => ({
-                id: s.id || `native-${idx}`,
-                title: s.title || 'Unknown Title',
-                artist: s.artist || 'Unknown Artist',
-                album: s.album || 'Unknown Album',
-                duration: s.duration || 180,
-                url: s.url || DEFAULT_LOCAL_AUDIO_PATH,
-                artwork: s.artwork,
-              }));
+        if (scannedSongs.length > 0) {
+          // Merge scanned songs with built-in song and user imported songs
+          const customSaved = this.getSavedCustomSongs();
+          const combined = [BUILTIN_SONG, ...customSaved];
 
-              if (!nativeSongs.some(s => s.url === DEFAULT_LOCAL_AUDIO_PATH)) {
-                nativeSongs.unshift(BUILTIN_SONG);
-              }
-              this.songs = nativeSongs;
-              this.notify();
-              return this.songs;
+          for (const s of scannedSongs) {
+            if (!combined.some(existing => existing.id === s.id || existing.url === s.url)) {
+              combined.push(s);
             }
-          } catch {}
+          }
+
+          this.songs = combined;
+          this.notify();
+          return this.songs;
         }
       }
-    } catch {}
+    } catch (e) {
+      console.warn('Error scanning native music library:', e);
+    }
 
-    this.songs = [...FALLBACK_LOCAL_SONGS];
+    // Fallback: Return built-in song + saved imported songs
+    const customSaved = this.getSavedCustomSongs();
+    this.songs = [BUILTIN_SONG, ...customSaved];
     this.notify();
     return this.songs;
+  }
+
+  /**
+   * Import a local song file selected by the user
+   */
+  public async addCustomSongFile(file: File): Promise<SongItem> {
+    const objectUrl = URL.createObjectURL(file);
+    const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
+
+    const newSong: SongItem = {
+      id: `imported-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      title: cleanTitle,
+      artist: 'Local Music',
+      album: 'Imported Track',
+      duration: 180,
+      url: objectUrl,
+      isBuiltIn: false,
+    };
+
+    this.songs = [...this.songs, newSong];
+    this.saveCustomSongMeta(newSong);
+    this.notify();
+    return newSong;
   }
 
   public getSongs(): SongItem[] {
@@ -95,6 +155,29 @@ class LocalMusicService {
     return () => {
       this.subscribers.delete(callback);
     };
+  }
+
+  private saveCustomSongMeta(song: SongItem) {
+    try {
+      const saved = this.getSavedCustomSongs();
+      saved.push(song);
+      localStorage.setItem('our_story_imported_songs', JSON.stringify(saved));
+    } catch {}
+  }
+
+  private getSavedCustomSongs(): SongItem[] {
+    try {
+      const raw = localStorage.getItem('our_story_imported_songs');
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return [];
+  }
+
+  private loadCustomSavedSongs() {
+    const saved = this.getSavedCustomSongs();
+    if (saved.length > 0) {
+      this.songs = [BUILTIN_SONG, ...saved];
+    }
   }
 
   private notify() {

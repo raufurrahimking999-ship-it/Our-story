@@ -1,14 +1,18 @@
 /**
  * High-Performance Singleton Audio Player Service for "Our Little Story"
+ * Inspired by Lark Player capabilities
  * 
  * Bundled Offline Native Audio Engine:
  * - Direct local asset playback via persistent singleton HTMLAudioElement
  * - 100% offline ready for built Android APK & Capacitor WebViews
  * - Full background & screen-off audio playback support via Android MediaSession API
  * - Media notification and lock-screen controls support
+ * - Expert Web Audio API Keep-Alive Context & Wakelock to prevent Android WebView suspension/stuttering in background
  */
 
-import { RELATIONSHIP_CONFIG, YOUTUBE_SONG_URL, DEFAULT_LOCAL_AUDIO_PATH } from '../config';
+import { RELATIONSHIP_CONFIG, DEFAULT_LOCAL_AUDIO_PATH } from '../config';
+
+export type RepeatMode = 'off' | 'all' | 'one';
 
 export interface YTPlayerInstance {
   playVideo: () => void;
@@ -61,11 +65,6 @@ export interface ExtendedWindow extends Window {
   onYouTubeIframeAPIReady?: () => void;
 }
 
-export const STORAGE_KEYS = {
-  SONG_URL: 'rls_persisted_song_url',
-  SONG_NAME: 'rls_persisted_song_name',
-};
-
 export interface AudioPlayerState {
   isPlaying: boolean;
   duration: number;
@@ -73,6 +72,7 @@ export interface AudioPlayerState {
   hasError: boolean;
   isMuted: boolean;
   isLooping: boolean;
+  repeatMode: RepeatMode;
   songUrl: string;
   songName: string;
   isCustom: boolean;
@@ -92,7 +92,6 @@ class AudioPlayerService {
   private ytPlayer: YTPlayerInstance | null = null;
   private ytContainer: HTMLDivElement | null = null;
   private isYtReady = false;
-  private pendingPlayOnReady = false;
 
   private isPlaying = false;
   private duration = 291.0; // 04:51 exact track length
@@ -100,13 +99,23 @@ class AudioPlayerService {
   private isLoading = true;
   private hasError = false;
   private isMuted = false;
-  private isLooping = true;
+  private repeatMode: RepeatMode = 'all';
 
   private songUrl: string = DEFAULT_LOCAL_AUDIO_PATH;
   private songName: string = RELATIONSHIP_CONFIG.songName;
   private isCustom = false;
 
+  private onEndedCallback: (() => void) | null = null;
+  private onNextCallback: (() => void) | null = null;
+  private onPrevCallback: (() => void) | null = null;
+
   private subscribers = new Set<(state: AudioPlayerState) => void>();
+
+  // Background Web Audio Keep-Alive Context & Wakelock to prevent Android WebView suspension/stuttering
+  private keepAliveCtx: AudioContext | null = null;
+  private keepAliveOsc: OscillatorNode | null = null;
+  private keepAliveGain: GainNode | null = null;
+  private wakeLock: any = null;
 
   constructor() {
     this.loadSavedSong();
@@ -121,16 +130,19 @@ class AudioPlayerService {
   }
 
   private loadSavedSong() {
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.removeItem(STORAGE_KEYS.SONG_URL);
-        localStorage.removeItem(STORAGE_KEYS.SONG_NAME);
-      }
-    } catch {}
-
     this.songUrl = DEFAULT_LOCAL_AUDIO_PATH;
     this.songName = RELATIONSHIP_CONFIG.songName;
     this.isCustom = false;
+  }
+
+  public setTrackCallbacks(callbacks: {
+    onEnded?: () => void;
+    onNext?: () => void;
+    onPrev?: () => void;
+  }) {
+    if (callbacks.onEnded) this.onEndedCallback = callbacks.onEnded;
+    if (callbacks.onNext) this.onNextCallback = callbacks.onNext;
+    if (callbacks.onPrev) this.onPrevCallback = callbacks.onPrev;
   }
 
   public init() {
@@ -148,7 +160,7 @@ class AudioPlayerService {
     if (!this.audioElement) {
       this.audioElement = new Audio();
       this.audioElement.preload = 'auto';
-      this.audioElement.loop = this.isLooping;
+      this.audioElement.loop = false; // We handle loop via repeatMode
       this.audioElement.volume = this.isMuted ? 0 : 1.0;
       this.audioElement.setAttribute('playsinline', '');
 
@@ -172,6 +184,7 @@ class AudioPlayerService {
         this.isLoading = false;
         this.setSystemVolume(1.0);
         this.updateMediaSessionState('playing');
+        this.startBackgroundKeepAlive();
         this.notify();
       });
 
@@ -181,6 +194,7 @@ class AudioPlayerService {
           this.lastKnownTime = this.audioElement!.currentTime;
         }
         this.updateMediaSessionState('paused');
+        this.stopBackgroundKeepAlive();
         this.notify();
       });
 
@@ -195,18 +209,27 @@ class AudioPlayerService {
         this.isPlaying = true;
         this.setSystemVolume(1.0);
         this.updateMediaSessionState('playing');
+        this.startBackgroundKeepAlive();
         this.notify();
       });
 
       this.audioElement.addEventListener('ended', () => {
-        if (this.isLooping) {
+        if (this.repeatMode === 'one') {
           this.audioElement!.currentTime = 0;
           this.audioElement!.play().catch(() => {});
         } else {
-          this.isPlaying = false;
-          this.lastKnownTime = 0;
-          this.updateMediaSessionState('paused');
-          this.notify();
+          if (this.onEndedCallback) {
+            this.onEndedCallback();
+          } else if (this.repeatMode === 'all') {
+            this.audioElement!.currentTime = 0;
+            this.audioElement!.play().catch(() => {});
+          } else {
+            this.isPlaying = false;
+            this.lastKnownTime = 0;
+            this.updateMediaSessionState('paused');
+            this.stopBackgroundKeepAlive();
+            this.notify();
+          }
         }
       });
 
@@ -218,6 +241,7 @@ class AudioPlayerService {
         } else {
           this.isLoading = false;
           this.hasError = true;
+          this.stopBackgroundKeepAlive();
           this.notify();
         }
       });
@@ -310,6 +334,7 @@ class AudioPlayerService {
                 this.hasError = false;
                 this.setSystemVolume(1.0);
                 this.updateMediaSessionState('playing');
+                this.startBackgroundKeepAlive();
               } else if (event.data === 2) { // PAUSED
                 this.isPlaying = false;
                 this.isLoading = false;
@@ -318,10 +343,18 @@ class AudioPlayerService {
                   if (Number.isFinite(cur)) this.lastKnownTime = cur;
                 } catch {}
                 this.updateMediaSessionState('paused');
+                this.stopBackgroundKeepAlive();
               } else if (event.data === 3) { // BUFFERING
                 this.isLoading = true;
               } else if (event.data === 0) { // ENDED
-                if (this.isLooping) {
+                if (this.repeatMode === 'one') {
+                  try {
+                    event.target.seekTo(0, true);
+                    event.target.playVideo();
+                  } catch {}
+                } else if (this.onEndedCallback) {
+                  this.onEndedCallback();
+                } else if (this.repeatMode === 'all') {
                   try {
                     event.target.seekTo(0, true);
                     event.target.playVideo();
@@ -330,9 +363,8 @@ class AudioPlayerService {
                   this.isPlaying = false;
                   this.lastKnownTime = 0;
                   this.updateMediaSessionState('paused');
+                  this.stopBackgroundKeepAlive();
                 }
-              } else if (event.data === -1 || event.data === 5) { // UNSTARTED / CUED
-                this.isLoading = false;
               }
               this.notify();
             },
@@ -340,6 +372,7 @@ class AudioPlayerService {
               this.isYtReady = false;
               this.isLoading = false;
               this.hasError = true;
+              this.stopBackgroundKeepAlive();
               this.notify();
             },
           },
@@ -395,10 +428,11 @@ class AudioPlayerService {
         }
       });
       navigator.mediaSession.setActionHandler('previoustrack', () => {
-        this.seek(0);
+        if (this.onPrevCallback) this.onPrevCallback();
+        else this.seek(0);
       });
       navigator.mediaSession.setActionHandler('nexttrack', () => {
-        this.seek(0);
+        if (this.onNextCallback) this.onNextCallback();
       });
     } catch (err) {
       console.warn('MediaSession action handlers not supported:', err);
@@ -472,6 +506,86 @@ class AudioPlayerService {
     }
   }
 
+  // Web Audio Context Keep-Alive & WakeLock to prevent WebView background throttling
+  private startBackgroundKeepAlive() {
+    try {
+      if (typeof window === 'undefined') return;
+      const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) return;
+
+      if (!this.keepAliveCtx) {
+        this.keepAliveCtx = new AudioContextClass();
+      }
+
+      const ctx = this.keepAliveCtx;
+      if (ctx) {
+        if (ctx.state === 'suspended') {
+          ctx.resume();
+        }
+
+        // Re-create oscillator node to sustain active processing
+        if (!this.keepAliveOsc) {
+          const osc = ctx.createOscillator();
+          const gainNode = ctx.createGain();
+          
+          this.keepAliveOsc = osc;
+          this.keepAliveGain = gainNode;
+          
+          // Silent frequency processing that prevents WebView system throttling
+          gainNode.gain.value = 0.001; 
+          
+          osc.connect(gainNode);
+          gainNode.connect(ctx.destination);
+          
+          osc.start();
+        }
+      }
+
+      // Request Screen/CPU Wake Lock
+      this.requestWakeLock();
+    } catch (e) {
+      console.warn('Keep-Alive initialization failed:', e);
+    }
+  }
+
+  private stopBackgroundKeepAlive() {
+    try {
+      if (this.keepAliveOsc) {
+        try { this.keepAliveOsc.stop(); } catch {}
+        this.keepAliveOsc.disconnect();
+        this.keepAliveOsc = null;
+      }
+      if (this.keepAliveGain) {
+        this.keepAliveGain.disconnect();
+        this.keepAliveGain = null;
+      }
+      if (this.keepAliveCtx && this.keepAliveCtx.state !== 'closed') {
+        this.keepAliveCtx.suspend();
+      }
+      this.releaseWakeLock();
+    } catch (e) {
+      console.warn('Keep-Alive termination failed:', e);
+    }
+  }
+
+  private async requestWakeLock() {
+    try {
+      if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+        this.wakeLock = await (navigator as any).wakeLock.request('screen');
+      }
+    } catch {}
+  }
+
+  private releaseWakeLock() {
+    try {
+      if (this.wakeLock) {
+        this.wakeLock.release().then(() => {
+          this.wakeLock = null;
+        });
+      }
+    } catch {}
+  }
+
   public getCurrentTime(): number {
     const isYt = Boolean(extractYouTubeId(this.songUrl));
     if (isYt && this.ytPlayer && this.isYtReady) {
@@ -501,12 +615,12 @@ class AudioPlayerService {
         try {
           this.ytPlayer.playVideo();
           this.updateMediaSessionState('playing');
+          this.startBackgroundKeepAlive();
           return;
         } catch (err) {
           console.warn('YouTube play failed:', err);
         }
       } else {
-        this.pendingPlayOnReady = true;
         this.isLoading = true;
         this.notify();
         return;
@@ -518,6 +632,7 @@ class AudioPlayerService {
         await this.audioElement.play();
         this.isPlaying = true;
         this.updateMediaSessionState('playing');
+        this.startBackgroundKeepAlive();
         this.notify();
         return;
       } catch (err) {
@@ -546,6 +661,7 @@ class AudioPlayerService {
 
     this.isPlaying = false;
     this.updateMediaSessionState('paused');
+    this.stopBackgroundKeepAlive();
     this.notify();
   }
 
@@ -587,12 +703,17 @@ class AudioPlayerService {
     this.notify();
   }
 
-  public toggleLoop(): void {
-    this.isLooping = !this.isLooping;
-    if (this.audioElement) {
-      this.audioElement.loop = this.isLooping;
-    }
+  public cycleRepeatMode(): RepeatMode {
+    if (this.repeatMode === 'off') this.repeatMode = 'all';
+    else if (this.repeatMode === 'all') this.repeatMode = 'one';
+    else this.repeatMode = 'off';
+
     this.notify();
+    return this.repeatMode;
+  }
+
+  public toggleLoop(): void {
+    this.cycleRepeatMode();
   }
 
   public setSong(url: string, name?: string): void {
@@ -639,11 +760,6 @@ class AudioPlayerService {
     this.pause();
     this.lastKnownTime = 0;
 
-    try {
-      localStorage.removeItem(STORAGE_KEYS.SONG_URL);
-      localStorage.removeItem(STORAGE_KEYS.SONG_NAME);
-    } catch {}
-
     this.songUrl = DEFAULT_LOCAL_AUDIO_PATH;
     this.songName = RELATIONSHIP_CONFIG.songName;
     this.isCustom = false;
@@ -666,7 +782,8 @@ class AudioPlayerService {
       isLoading: this.isLoading,
       hasError: this.hasError,
       isMuted: this.isMuted,
-      isLooping: this.isLooping,
+      isLooping: this.repeatMode !== 'off',
+      repeatMode: this.repeatMode,
       songUrl: this.songUrl,
       songName: this.songName,
       isCustom: this.isCustom,

@@ -5,11 +5,12 @@ interface LoveParticle {
   y: number;
   scale: number;
   speedY: number;
-  speedX: number;
   swayFreq: number;
   swayPhase: number;
+  swayAmp: number;
   maxOpacity: number;
   hue: number;
+  rotation: number;
 }
 
 interface StarParticle {
@@ -34,87 +35,140 @@ export const BackgroundAura: React.FC = () => {
 
     let animationFrameId: number;
     let isRunning = true;
-    let width = (canvas.width = window.innerWidth);
-    let height = (canvas.height = window.innerHeight);
+
+    // Detect Device Pixel Ratio (DPR) for Native/High-Density Crisp Rendering
+    let dpr = window.devicePixelRatio || 1;
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+
+    // Setup High-Definition Backing Store Size
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    canvas.style.width = width + 'px';
+    canvas.style.height = height + 'px';
+    ctx.scale(dpr, dpr);
 
     const handleResize = () => {
       if (!canvas) return;
-      width = canvas.width = window.innerWidth;
-      height = canvas.height = window.innerHeight;
+      const currentDpr = window.devicePixelRatio || 1;
+      width = window.innerWidth;
+      height = window.innerHeight;
+      
+      canvas.width = width * currentDpr;
+      canvas.height = height * currentDpr;
+      canvas.style.width = width + 'px';
+      canvas.style.height = height + 'px';
+      
+      const newCtx = canvas.getContext('2d');
+      if (newCtx) {
+        newCtx.scale(currentDpr, currentDpr);
+      }
     };
     window.addEventListener('resize', handleResize);
 
     // =========================================================================
-    // SOFT LOVE-SHAPED PARTICLES (More hearts, 300-500ms initial delay, absolute bottom edge, faster flow)
+    // ORGANIC FLOATING HEART PARTICLES (Perfect Bottom Spawn & Straight Upward Flow)
     // =========================================================================
-    const loveParticleCount = 18;
-    const loveParticles: LoveParticle[] = Array.from({ length: loveParticleCount }, (_, idx) => {
-      const hues = [225, 235, 248, 260, 268, 338, 345];
-      return {
-        x: Math.random() * width,
-        // Staggered nicely below the absolute bottom edge for continuous staggered flow
-        y: height + 10 + (idx * 35) + Math.random() * 50,
-        scale: Math.random() * 3.5 + 6.5, // 6.5px to 10px
-        speedY: Math.random() * 0.28 + 0.18, // slightly faster smooth upward speed
-        speedX: (Math.random() - 0.5) * 0.08,
-        swayFreq: Math.random() * 0.014 + 0.007,
-        swayPhase: Math.random() * Math.PI * 2,
-        maxOpacity: Math.random() * 0.08 + 0.07, // subtle, elegant
-        hue: hues[Math.floor(Math.random() * hues.length)],
-      };
-    });
+    const loveParticleCount = 14; 
+    const hues = [225, 235, 248, 260, 335, 345, 352];
 
-    // Ambient micro-starlight dust (18 subtle points)
-    const starCount = 18;
+    const createHeart = (idx: number, startOffscreenFar = false): LoveParticle => {
+      const scale = Math.random() * 8 + 6; // Proportional 1:1 scale
+      const depthFactor = (scale - 6) / 8; 
+
+      // DOMINANT VERTICAL UPWARD MOVEMENT (Slightly faster for more clean flow)
+      const speedY = 0.35 + depthFactor * 0.35 + Math.random() * 0.12; 
+      
+      // VERY SUBTLE HORIZONTAL DRIFT (Extremely small sway amplitude)
+      const swayAmp = 0.03 + depthFactor * 0.04 + Math.random() * 0.02; 
+      
+      const maxOpacity = 0.1 + depthFactor * 0.14 + Math.random() * 0.04; 
+      
+      const swayFreq = 0.006 + Math.random() * 0.005;
+      const swayPhase = Math.random() * Math.PI * 2;
+      const hue = hues[Math.floor(Math.random() * hues.length)];
+
+      // Staggered bottom starting offsets to prevent clumped waves
+      // Guaranteed to start completely off-screen below the bottom edge (height + offset)
+      const initialOffset = startOffscreenFar ? 30 : 40 + (idx * 85);
+      const y = height + initialOffset + Math.random() * 40;
+
+      return {
+        // Start horizontal coordinate inside safe window margins
+        x: 40 + Math.random() * (width - 80),
+        y,
+        scale,
+        speedY,
+        swayFreq,
+        swayPhase,
+        swayAmp,
+        maxOpacity,
+        hue,
+        rotation: 0,
+      };
+    };
+
+    // Initialize ALL hearts strictly below the viewport bottom (never in the middle or upper area)
+    const loveParticles: LoveParticle[] = Array.from({ length: loveParticleCount }, (_, idx) => 
+      createHeart(idx, false)
+    );
+
+    // Subtle background stars
+    const starCount = 16;
     const starParticles: StarParticle[] = Array.from({ length: starCount }, () => ({
       x: Math.random() * width,
       y: Math.random() * height,
-      size: Math.random() * 1.4 + 0.6,
-      speedY: Math.random() * 0.15 + 0.04,
-      speedX: (Math.random() - 0.5) * 0.08,
-      opacity: Math.random() * 0.3 + 0.1,
-      hue: Math.random() > 0.4 ? 230 : 255,
+      size: Math.random() * 1.1 + 0.5,
+      speedY: Math.random() * 0.1 + 0.03,
+      speedX: (Math.random() - 0.5) * 0.05,
+      opacity: Math.random() * 0.2 + 0.06,
+      hue: Math.random() > 0.5 ? 230 : 255,
       phase: Math.random() * Math.PI * 2,
     }));
 
-    // Draw soft heart silhouette
+    // Draw perfectly symmetric, unwarped geometric vector heart (Classic 1:1 ratio)
     const drawSoftHeart = (
       x: number,
       y: number,
-      scale: number,
+      size: number,
       opacity: number,
-      hue: number
+      hue: number,
+      rotation: number
     ) => {
-      if (opacity <= 0.005) return;
+      if (opacity <= 0.001) return;
 
       ctx.save();
-      ctx.shadowBlur = scale * 1.2;
-      ctx.shadowColor = `hsla(${hue}, 75%, 78%, ${opacity * 0.9})`;
-      ctx.fillStyle = `hsla(${hue}, 70%, 82%, ${opacity})`;
+      ctx.translate(x, y);
+      ctx.rotate(rotation);
+
+      ctx.shadowBlur = size * 1.25;
+      ctx.shadowColor = `hsla(${hue}, 85%, 72%, ${opacity * 0.75})`;
+      ctx.fillStyle = `hsla(${hue}, 82%, 82%, ${opacity})`;
 
       ctx.beginPath();
-      const cleftY = y - scale * 0.32;
-      const bottomY = y + scale * 0.88;
+      // Start at the bottom tip
+      ctx.moveTo(0, size * 0.5);
 
-      ctx.moveTo(x, cleftY);
-      // Left lobe
+      // Left lobe curve
       ctx.bezierCurveTo(
-        x - scale * 0.55,
-        y - scale * 0.92,
-        x - scale * 1.08,
-        y - scale * 0.08,
-        x,
-        bottomY
+        -size * 0.6,
+        -size * 0.1,
+        -size * 0.6,
+        -size * 0.7,
+        0,
+        -size * 0.4
       );
-      // Right lobe
+
+      // Right lobe curve
       ctx.bezierCurveTo(
-        x + scale * 1.08,
-        y - scale * 0.08,
-        x + scale * 0.55,
-        y - scale * 0.92,
-        x,
-        cleftY
+        size * 0.6,
+        -size * 0.7,
+        size * 0.6,
+        -size * 0.1,
+        0,
+        size * 0.5
       );
+      
       ctx.closePath();
       ctx.fill();
       ctx.restore();
@@ -127,67 +181,74 @@ export const BackgroundAura: React.FC = () => {
       tick += 1;
       ctx.clearRect(0, 0, width, height);
 
-      // 1. Render and update soft love particles
-      // ~350-400ms initial delay (approx 22-25 frames @ 60fps) before hearts begin rising
-      const isInitialDelayPassed = tick > 22;
-
+      // Update and render each heart
       for (let i = 0; i < loveParticles.length; i++) {
         const p = loveParticles[i];
 
-        if (isInitialDelayPassed) {
-          // Move upward smoothly from absolute bottom edge
-          p.y -= p.speedY;
-          p.x += Math.sin(tick * p.swayFreq + p.swayPhase) * 0.22 + p.speedX;
+        // Move primarily STRAIGHT UP
+        p.y -= p.speedY;
+
+        // Extremely slow and subtle left/right drift
+        const swayValue = Math.sin(tick * p.swayFreq + p.swayPhase);
+        p.x += swayValue * p.swayAmp;
+
+        // Extremely subtle natural tilt aligned with lateral drift direction (no excessive spinning)
+        p.rotation = swayValue * 0.06; 
+
+        // Continues rising until they completely leave through the TOP edge of the screen
+        if (p.y < -35) {
+          loveParticles[i] = createHeart(i, true);
+          continue;
         }
 
-        // When heart reaches upper area and completely fades out, respawn at absolute bottom edge with varied interval
-        if (p.y < height * 0.15) {
-          p.y = height + 10 + Math.random() * 40; // absolute bottom edge
-          p.x = Math.random() * width;
-          p.swayPhase = Math.random() * Math.PI * 2;
+        // Horizontal wrap constraint (recycles if somehow pushed extremely wide)
+        if (p.x < -35 || p.x > width + 35) {
+          loveParticles[i] = createHeart(i, true);
+          continue;
         }
-        if (p.x < -30) p.x = width + 30;
-        if (p.x > width + 30) p.x = -30;
 
-        // Opacity animation flow:
-        // - Bottom: fade in gradually as it leaves bottom edge
-        // - Middle: full maxOpacity
-        // - Top: gradually fade out to 0 near top
+        // Organic Fading:
+        // - Gradually fade in as it enters from the absolute bottom edge of screen
+        // - Fades out slowly as it leaves through the TOP edge
         let opacityFactor = 1.0;
-        const topFadeThreshold = height * 0.25;
-        const bottomFadeThreshold = height * 0.92;
+        const topFadeLimit = height * 0.2;
+        const bottomFadeLimit = height * 0.88;
 
-        if (p.y > bottomFadeThreshold) {
-          // Fading in from absolute bottom edge
-          opacityFactor = Math.max(0, (height + 20 - p.y) / (height * 0.08));
-        } else if (p.y < topFadeThreshold) {
-          // Fading out towards top
-          opacityFactor = Math.max(0, p.y / topFadeThreshold);
+        if (p.y > bottomFadeLimit) {
+          opacityFactor = Math.max(0, (height - p.y) / (height - bottomFadeLimit));
+        } else if (p.y < topFadeLimit) {
+          // Fade out smoothly only near the top edge
+          opacityFactor = Math.max(0, p.y / topFadeLimit);
+        }
+
+        // Absolutely invisible if still completely below viewport bottom
+        if (p.y > height) {
+          opacityFactor = 0;
         }
 
         const currentOpacity = p.maxOpacity * opacityFactor;
-        drawSoftHeart(p.x, p.y, p.scale, currentOpacity, p.hue);
+        drawSoftHeart(p.x, p.y, p.scale, currentOpacity, p.hue, p.rotation);
       }
 
-      // 2. Render subtle midnight starlight particles
+      // Render starry background
       for (let i = 0; i < starParticles.length; i++) {
         const s = starParticles[i];
         s.y -= s.speedY;
-        s.x += Math.sin(tick * 0.012 + s.phase) * 0.1 + s.speedX;
+        s.x += Math.sin(tick * 0.01 + s.phase) * 0.06 + s.speedX;
 
-        if (s.y < -10) {
-          s.y = height + 10;
+        if (s.y < -15) {
+          s.y = height + 15;
           s.x = Math.random() * width;
         }
-        if (s.x < -10) s.x = width + 10;
-        if (s.x > width + 10) s.x = -10;
+        if (s.x < -15) s.x = width + 15;
+        if (s.x > width + 15) s.x = -15;
 
-        const starOpacity = s.opacity * (0.7 + 0.3 * Math.sin(tick * 0.025 + s.phase));
+        const starOpacity = s.opacity * (0.65 + 0.35 * Math.sin(tick * 0.018 + s.phase));
 
         ctx.beginPath();
         ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
         ctx.fillStyle = `hsla(${s.hue}, 80%, 85%, ${starOpacity})`;
-        ctx.shadowBlur = 4;
+        ctx.shadowBlur = 3;
         ctx.shadowColor = `hsla(${s.hue}, 90%, 75%, ${starOpacity})`;
         ctx.fill();
       }

@@ -1,8 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, Volume2, VolumeX, Repeat, Music2, X, SkipBack, SkipForward, ListMusic, Disc } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { 
+  Play, Pause, Volume2, VolumeX, Repeat, Repeat1, Shuffle, 
+  Music2, SkipBack, SkipForward, ListMusic, ArrowLeft, Search, AlertCircle, Loader2, Heart, ShieldAlert, Sparkles 
+} from 'lucide-react';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
-import { audioPlayer } from '../services/audioPlayerService';
+import { audioPlayer, RepeatMode } from '../services/audioPlayerService';
 import { localMusicService, SongItem } from '../services/localMusicService';
+import { permissionService } from '../services/permissionService';
 
 function formatAudioTime(seconds: number): string {
   if (isNaN(seconds) || seconds < 0 || !Number.isFinite(seconds)) return '00:00';
@@ -17,27 +22,49 @@ export const MusicPlayerCard: React.FC = () => {
     togglePlay,
     seek,
     toggleMute,
-    toggleLoop,
     setSong,
   } = useAudioPlayer();
 
   const {
     isPlaying,
     duration,
+    isLoading,
+    hasError,
     isMuted,
-    isLooping,
+    repeatMode,
     songName,
     songUrl,
   } = state;
 
-  // Local music library state
+  // Local music library & state
   const [songs, setSongs] = useState<SongItem[]>([]);
-  const [isPlaylistModalOpen, setIsPlaylistModalOpen] = useState<boolean>(false);
+  const [isShuffle, setIsShuffle] = useState<boolean>(false);
+  const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false); // Full-screen State
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [hasAudioPermission, setHasPermission] = useState<boolean | null>(null);
+  
+  // Custom Local Storage Favorites
+  const [favorites, setFavorites] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('our_story_favorite_songs');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
 
-  // Request Android permissions & scan local music library on mount
+  // Sync track callbacks with audioPlayerService for Android locks/next track
   useEffect(() => {
-    localMusicService.requestPermissionAndScan();
+    audioPlayer.setTrackCallbacks({
+      onEnded: () => handlePlayNext(),
+      onNext: () => handlePlayNext(),
+      onPrev: () => handlePlayPrevious(),
+    });
+  }, [songs, songUrl, isShuffle, repeatMode]);
+
+  // Initial Permission Check
+  useEffect(() => {
+    checkDevicePermission();
     const unsubscribe = localMusicService.subscribe((list) => {
       setSongs(list);
     });
@@ -46,11 +73,41 @@ export const MusicPlayerCard: React.FC = () => {
     };
   }, []);
 
+  const checkDevicePermission = async () => {
+    const status = await permissionService.checkPermissions();
+    const granted = status.audio === 'granted';
+    setHasPermission(granted);
+    if (granted) {
+      localMusicService.requestPermissionAndScan();
+    }
+  };
+
+  const handleGrantPermission = async () => {
+    const granted = await permissionService.requestAudioPermission();
+    setHasPermission(granted);
+    if (granted) {
+      await localMusicService.requestPermissionAndScan();
+    }
+  };
+
   // Find current song index in playlist
   const currentSongIndex = songs.findIndex((s) => s.url === songUrl || songName.includes(s.title));
 
   const handlePlayNext = () => {
     if (songs.length === 0) return;
+
+    if (isShuffle && songs.length > 1) {
+      let randomIdx = Math.floor(Math.random() * songs.length);
+      if (randomIdx === currentSongIndex) {
+        randomIdx = (currentSongIndex + 1) % songs.length;
+      }
+      const nextSong = songs[randomIdx];
+      if (nextSong) {
+        setSong(nextSong.url, `${nextSong.title} — ${nextSong.artist}`);
+      }
+      return;
+    }
+
     const nextIdx = currentSongIndex >= 0 ? (currentSongIndex + 1) % songs.length : 0;
     const nextSong = songs[nextIdx];
     if (nextSong) {
@@ -60,6 +117,23 @@ export const MusicPlayerCard: React.FC = () => {
 
   const handlePlayPrevious = () => {
     if (songs.length === 0) return;
+
+    // If current time is past 3 seconds, restart current track first
+    const curTime = audioPlayer.getCurrentTime();
+    if (curTime > 3) {
+      audioPlayer.seek(0);
+      return;
+    }
+
+    if (isShuffle && songs.length > 1) {
+      let randomIdx = Math.floor(Math.random() * songs.length);
+      const prevSong = songs[randomIdx];
+      if (prevSong) {
+        setSong(prevSong.url, `${prevSong.title} — ${prevSong.artist}`);
+      }
+      return;
+    }
+
     const prevIdx = currentSongIndex > 0 ? currentSongIndex - 1 : songs.length - 1;
     const prevSong = songs[prevIdx];
     if (prevSong) {
@@ -67,36 +141,57 @@ export const MusicPlayerCard: React.FC = () => {
     }
   };
 
-  // Direct DOM element refs for 60fps/120fps updates (0 React re-renders per second)
+  const handleCycleRepeat = () => {
+    audioPlayer.cycleRepeatMode();
+  };
+
+  const toggleFavorite = (songId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setFavorites((prev) => {
+      const updated = prev.includes(songId) 
+        ? prev.filter(id => id !== songId) 
+        : [...prev, songId];
+      try {
+        localStorage.setItem('our_story_favorite_songs', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+  };
+
+  // Direct DOM element refs for 60fps smooth progress bar without React re-renders (Main Card)
   const trackContainerRef = useRef<HTMLDivElement>(null);
   const progressFillRef = useRef<HTMLDivElement>(null);
   const progressKnobRef = useRef<HTMLDivElement>(null);
   const currentTimeSpanRef = useRef<HTMLSpanElement>(null);
 
-  // Scratch mutable drag refs
+  // Direct DOM element refs for Full-Screen Library Bottom Player Deck
+  const libTrackContainerRef = useRef<HTMLDivElement>(null);
+  const libProgressFillRef = useRef<HTMLDivElement>(null);
+  const libProgressKnobRef = useRef<HTMLDivElement>(null);
+  const libCurrentTimeSpanRef = useRef<HTMLSpanElement>(null);
+
   const isDraggingRef = useRef<boolean>(false);
   const dragTimeRef = useRef<number>(0);
 
   const validDuration = Number.isFinite(duration) && duration > 0 ? duration : 291.0;
 
-  // Direct DOM updater helper
   const updateProgressDOM = (currentSec: number, totalDur: number) => {
     const validDur = totalDur > 0 ? totalDur : 291.0;
     const clampedSec = Math.max(0, Math.min(currentSec, validDur));
     const percent = Math.min(100, Math.max(0, (clampedSec / validDur) * 100));
 
-    if (progressFillRef.current) {
-      progressFillRef.current.style.width = `${percent}%`;
-    }
-    if (progressKnobRef.current) {
-      progressKnobRef.current.style.left = `${percent}%`;
-    }
-    if (currentTimeSpanRef.current) {
-      currentTimeSpanRef.current.textContent = formatAudioTime(clampedSec);
-    }
+    // Update Main Card DOM elements if visible
+    if (progressFillRef.current) progressFillRef.current.style.width = `${percent}%`;
+    if (progressKnobRef.current) progressKnobRef.current.style.left = `${percent}%`;
+    if (currentTimeSpanRef.current) currentTimeSpanRef.current.textContent = formatAudioTime(clampedSec);
+
+    // Update Full-Screen Library Deck DOM elements if visible
+    if (libProgressFillRef.current) libProgressFillRef.current.style.width = `${percent}%`;
+    if (libProgressKnobRef.current) libProgressKnobRef.current.style.left = `${percent}%`;
+    if (libCurrentTimeSpanRef.current) libCurrentTimeSpanRef.current.textContent = formatAudioTime(clampedSec);
   };
 
-  // High-performance requestAnimationFrame loop running ONLY while playing
+  // RAF Loop while playing
   useEffect(() => {
     let rafId: number | null = null;
 
@@ -123,72 +218,65 @@ export const MusicPlayerCard: React.FC = () => {
         rafId = null;
       }
     };
-  }, [isPlaying, validDuration]);
+  }, [isPlaying, validDuration, isLibraryOpen]);
 
-  const computeTargetSecondsFromClientX = (clientX: number): number => {
-    if (!trackContainerRef.current) return 0;
-    const rect = trackContainerRef.current.getBoundingClientRect();
+  const computeTargetSecondsFromClientX = (clientX: number, isLibDeck = false): number => {
+    const container = isLibDeck ? libTrackContainerRef.current : trackContainerRef.current;
+    if (!container) return 0;
+    const rect = container.getBoundingClientRect();
     if (rect.width <= 0) return 0;
     const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     return ratio * validDuration;
   };
 
-  const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+  const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>, isLibDeck = false) => {
     e.preventDefault();
     isDraggingRef.current = true;
     try {
-      e.currentTarget.setPointerCapture(e.pointerId);
+      e.pointerId !== undefined && e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
 
-    const targetSec = computeTargetSecondsFromClientX(e.clientX);
+    const targetSec = computeTargetSecondsFromClientX(e.clientX, isLibDeck);
     dragTimeRef.current = targetSec;
     updateProgressDOM(targetSec, validDuration);
   };
 
-  const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+  const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>, isLibDeck = false) => {
     if (!isDraggingRef.current) return;
     e.preventDefault();
 
-    const targetSec = computeTargetSecondsFromClientX(e.clientX);
+    const targetSec = computeTargetSecondsFromClientX(e.clientX, isLibDeck);
     dragTimeRef.current = targetSec;
     updateProgressDOM(targetSec, validDuration);
   };
 
-  const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+  const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>, isLibDeck = false) => {
     if (!isDraggingRef.current) return;
     e.preventDefault();
     isDraggingRef.current = false;
     try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
+      e.pointerId !== undefined && e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}
 
-    const finalTargetSec = computeTargetSecondsFromClientX(e.clientX);
+    const finalTargetSec = computeTargetSecondsFromClientX(e.clientX, isLibDeck);
     dragTimeRef.current = finalTargetSec;
     updateProgressDOM(finalTargetSec, validDuration);
     seek(finalTargetSec);
   };
 
-  const handleTrackPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDraggingRef.current) return;
-    isDraggingRef.current = false;
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {}
-
-    seek(dragTimeRef.current);
-    updateProgressDOM(dragTimeRef.current, validDuration);
-  };
-
   const filteredSongs = songs.filter(s => 
     s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    s.artist.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    s.album.toLowerCase().includes(searchQuery.toLowerCase())
+    s.artist.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   return (
     <div className="w-full max-w-md px-2 relative">
-      {/* Compact Glassmorphic Music Card */}
-      <div className="glass-panel rounded-2xl p-3.5 sm:p-4 transition-all duration-300 relative overflow-hidden">
+      {/* 
+        =========================================================================
+        1. EXISTING MAIN AUDIO PLAYER CARD (Elegant Glassmorphism Theme)
+        =========================================================================
+      */}
+      <div className="bg-gradient-to-b from-[#0e1428] to-[#080c18] border border-indigo-500/15 shadow-[0_16px_44px_rgba(3,4,10,0.85)] rounded-2xl p-3.5 sm:p-4 transition-all duration-300 relative overflow-hidden">
         {/* Subtle Ambient Backlight Glow inside Card while playing */}
         <div
           className={`absolute -top-12 -right-12 w-28 h-28 rounded-full bg-gradient-to-tr from-indigo-500/15 via-violet-600/10 to-indigo-400/10 blur-xl transition-opacity duration-1000 pointer-events-none ${
@@ -197,7 +285,7 @@ export const MusicPlayerCard: React.FC = () => {
         />
 
         {/* Top Header Row: Icon, Title & Controls */}
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2 relative z-10">
           {/* Left: Disc icon & Song meta */}
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
             {/* Compact Spinning Disc Icon */}
@@ -221,22 +309,23 @@ export const MusicPlayerCard: React.FC = () => {
             <div className="flex flex-col min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
                 <button
-                  onClick={() => setIsPlaylistModalOpen(true)}
+                  onClick={() => setIsLibraryOpen(true)}
                   className="text-xs sm:text-sm font-medium text-slate-100 truncate tracking-wide leading-tight text-left hover:text-indigo-200 transition-colors"
-                  title="Open local music library playlist"
+                  title="Open Dedicated Song List"
                 >
                   {songName}
                 </button>
               </div>
               <div className="flex items-center gap-2 text-[10px] text-slate-400">
-                <span>{songs.length} local songs available</span>
+                <span>{songs.length} songs available</span>
+                {isLoading && <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-300" />}
               </div>
             </div>
           </div>
 
-          {/* Right: Controls & Play/Pause */}
+          {/* Right Controls Container */}
           <div className="flex items-center gap-1.5 shrink-0">
-            {/* Previous Song */}
+            {/* Previous Track */}
             <button
               onClick={handlePlayPrevious}
               className="p-1.5 text-slate-300 hover:text-white transition-colors active:scale-95"
@@ -246,20 +335,23 @@ export const MusicPlayerCard: React.FC = () => {
               <SkipBack className="w-3.5 h-3.5" />
             </button>
 
-            {/* Compact Play / Pause Button */}
+            {/* Play/Pause Button */}
             <button
               onClick={togglePlay}
+              disabled={isLoading}
               className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-gradient-to-b from-indigo-500/30 to-violet-600/30 hover:from-indigo-500/40 hover:to-violet-600/40 border border-indigo-400/40 flex items-center justify-center text-white shadow-[0_0_12px_rgba(99,102,241,0.25)] active:scale-95 transition-all duration-150"
               aria-label={isPlaying ? 'Pause song' : 'Play song'}
             >
-              {isPlaying ? (
+              {isLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+              ) : isPlaying ? (
                 <Pause className="w-3.5 h-3.5 fill-current text-slate-100" />
               ) : (
                 <Play className="w-3.5 h-3.5 fill-current text-slate-100 ml-0.5" />
               )}
             </button>
 
-            {/* Next Song */}
+            {/* Next Track */}
             <button
               onClick={handlePlayNext}
               className="p-1.5 text-slate-300 hover:text-white transition-colors active:scale-95"
@@ -269,12 +361,12 @@ export const MusicPlayerCard: React.FC = () => {
               <SkipForward className="w-3.5 h-3.5" />
             </button>
 
-            {/* Playlist Library Button */}
+            {/* Dedicated Song List Trigger */}
             <button
-              onClick={() => setIsPlaylistModalOpen(true)}
-              className="p-1.5 text-indigo-300 hover:text-indigo-200 transition-colors active:scale-95 ml-0.5"
-              title="Open local music library"
-              aria-label="Open local music library"
+              onClick={() => setIsLibraryOpen(true)}
+              className="p-1.5 rounded-lg text-indigo-300 hover:text-indigo-200 transition-colors active:scale-95 ml-0.5"
+              title="Open full-screen Song List"
+              aria-label="Open full-screen Song List"
             >
               <ListMusic className="w-4 h-4" />
             </button>
@@ -282,14 +374,14 @@ export const MusicPlayerCard: React.FC = () => {
         </div>
 
         {/* Slim, Elegant Progress Bar & Timestamps */}
-        <div className="mt-2.5 space-y-1">
+        <div className="mt-2.5 space-y-1 relative z-10">
           {/* Synchronized Custom Progress Track Container */}
           <div
             ref={trackContainerRef}
-            onPointerDown={handleTrackPointerDown}
-            onPointerMove={handleTrackPointerMove}
-            onPointerUp={handleTrackPointerUp}
-            onPointerCancel={handleTrackPointerCancel}
+            onPointerDown={(e) => handleTrackPointerDown(e, false)}
+            onPointerMove={(e) => handleTrackPointerMove(e, false)}
+            onPointerUp={(e) => handleTrackPointerUp(e, false)}
+            onPointerCancel={(e) => handleTrackPointerUp(e, false)}
             role="slider"
             aria-label="Seek progress"
             aria-valuemin={0}
@@ -319,7 +411,33 @@ export const MusicPlayerCard: React.FC = () => {
           <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono tabular-nums px-0.5 pt-0.5 select-none">
             <span ref={currentTimeSpanRef}>00:00</span>
 
+            {/* Playback Controls Row */}
             <div className="flex items-center gap-3">
+              {/* Shuffle button */}
+              <button
+                onClick={() => setIsShuffle(!isShuffle)}
+                className={`p-0.5 transition-colors active:scale-95 ${
+                  isShuffle ? 'text-indigo-300 shadow-[0_0_8px_rgba(129,140,248,0.5)]' : 'text-slate-500 hover:text-slate-300'
+                }`}
+                title={isShuffle ? 'Shuffle: On' : 'Shuffle: Off'}
+                aria-label="Toggle Shuffle"
+              >
+                <Shuffle className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Repeat Button */}
+              <button
+                onClick={handleCycleRepeat}
+                className={`p-0.5 transition-colors active:scale-95 flex items-center relative ${
+                  repeatMode !== 'off' ? 'text-indigo-300' : 'text-slate-500 hover:text-slate-300'
+                }`}
+                title={`Repeat: ${repeatMode}`}
+                aria-label="Cycle Repeat mode"
+              >
+                {repeatMode === 'one' ? <Repeat1 className="w-3.5 h-3.5 text-rose-300" /> : <Repeat className="w-3.5 h-3.5" />}
+              </button>
+
+              {/* Mute button */}
               <button
                 onClick={toggleMute}
                 className="text-slate-400 hover:text-slate-200 transition-colors p-0.5 active:scale-95"
@@ -327,140 +445,324 @@ export const MusicPlayerCard: React.FC = () => {
                 title={isMuted ? 'Unmute' : 'Mute'}
               >
                 {isMuted ? (
-                  <VolumeX className="w-3 h-3 text-slate-400" />
+                  <VolumeX className="w-3.5 h-3.5 text-rose-400" />
                 ) : (
-                  <Volume2 className="w-3 h-3 text-indigo-300/80" />
+                  <Volume2 className="w-3.5 h-3.5 text-indigo-300/80" />
                 )}
-              </button>
-              <button
-                onClick={toggleLoop}
-                className={`p-0.5 transition-colors active:scale-95 ${
-                  isLooping ? 'text-indigo-300' : 'text-slate-500 hover:text-slate-300'
-                }`}
-                aria-label="Toggle repeat"
-                title={isLooping ? 'Repeat: On' : 'Repeat: Off'}
-              >
-                <Repeat className="w-3 h-3" />
               </button>
             </div>
 
             <span>{formatAudioTime(validDuration)}</span>
           </div>
         </div>
+
+        {/* Error notification */}
+        {hasError && (
+          <div className="mt-2.5 p-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-[11px] flex items-center justify-between gap-1.5 relative z-10 animate-fade-in">
+            <span className="flex items-center gap-1">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" /> Failed to load track.
+            </span>
+            <button
+              onClick={() => audioPlayer.resetToDefault()}
+              className="text-[10px] text-indigo-300 hover:underline"
+            >
+              Reset Player
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Playlist / Local Music Library Modal */}
-      {isPlaylistModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-digit-fade"
-          onClick={() => setIsPlaylistModalOpen(false)}
-        >
-          <div
-            className="glass-panel w-full max-w-lg rounded-2xl p-5 shadow-2xl border border-white/10 relative max-h-[85vh] flex flex-col"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between pb-3 border-b border-white/10 shrink-0">
-              <div className="flex items-center gap-2">
-                <Disc className="w-5 h-5 text-indigo-400 animate-spin-slow" />
-                <div>
-                  <h3 className="text-sm font-medium text-slate-100 tracking-wide">
-                    Device Music Library
-                  </h3>
-                  <p className="text-[10px] text-slate-400">
-                    {songs.length} audio tracks available offline
+      {/* 
+        =========================================================================
+        2. PORTALED FULL-SCREEN SONG LIST (PREMIUM ROMANTIC MUSIC LIBRARY)
+        - Uses React Portal to guarantee absolutely 100% viewport edge-to-edge layout
+        - Removes all left/right margin limits or centered narrow constraint boxes
+        - Responds flawlessly to all Android displays & high-density screens
+        - Solid, non-glass theme with beautiful deep indigo lighting & subtle peeking background hearts
+        =========================================================================
+      */}
+      {isLibraryOpen && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex flex-col bg-[#050813] text-slate-100 overflow-hidden select-none animate-digit-fade">
+          
+          {/* Subtle Romantic Vector Ambient Heart Layout background details (Static & Soft) */}
+          <div className="absolute top-[8%] left-[6%] w-[180px] h-[180px] rounded-full bg-indigo-600/10 blur-[80px] pointer-events-none" />
+          <div className="absolute bottom-[20%] right-[4%] w-[220px] h-[220px] rounded-full bg-pink-600/5 blur-[90px] pointer-events-none" />
+
+          {/* Solid Top Header - Perfectly Responsive, Edge-to-Edge */}
+          <header className="w-full shrink-0 border-b border-white/5 bg-[#080d20] px-4 py-3 sm:px-6 flex items-center justify-between z-30 pt-[calc(10px+env(safe-area-inset-top,0px))]">
+            <button
+              onClick={() => setIsLibraryOpen(false)}
+              className="flex items-center gap-2 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl bg-[#11192e] border border-white/10 text-xs font-bold text-slate-300 hover:text-white transition-all active:scale-95 shrink-0"
+              title="Return to Player"
+            >
+              <ArrowLeft className="w-4 h-4 text-indigo-300" />
+              <span>Back</span>
+            </button>
+
+            <div className="text-center min-w-0 flex-1 px-2">
+              <h1 className="text-sm sm:text-base font-extrabold tracking-widest text-slate-100 flex items-center justify-center gap-2">
+                <span>Song List</span>
+                <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500/20" />
+              </h1>
+              <p className="text-[10px] text-indigo-300/60 font-semibold tracking-wider mt-0.5">Premium Romantic Collection</p>
+            </div>
+
+            {/* Empty balance item for perfect alignment */}
+            <div className="w-[72px] sm:w-[84px] shrink-0" />
+          </header>
+
+          {/* Main content - Spans 100% width with no side margins */}
+          <div className="flex-1 overflow-y-auto space-y-4 px-4 py-4 sm:px-6 pb-36 z-20">
+            {hasAudioPermission === false ? (
+              /* Permission Gate Box */
+              <div className="flex flex-col items-center justify-center text-center max-w-sm mx-auto h-[60vh] space-y-4">
+                <div className="w-14 h-14 rounded-2xl bg-[#0f152a] border border-white/15 flex items-center justify-center text-indigo-400 shadow-xl">
+                  <ShieldAlert className="w-7 h-7" />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="text-sm font-bold text-slate-100">Audio Access Needed</h3>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Please grant audio permissions so the app can scan and play local romantic tracks directly from your device.
+                  </p>
+                </div>
+                <button
+                  onClick={handleGrantPermission}
+                  className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition-all active:scale-95 shadow-md"
+                >
+                  Enable Audio Permission
+                </button>
+              </div>
+            ) : (
+              /* Full Width Songs listing */
+              <div className="space-y-4">
+                
+                {/* Clean Solid Search Input - Premium Minimal Styling */}
+                <div className="relative w-full">
+                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400">
+                    <Search className="w-4 h-4 text-indigo-400/70" />
+                  </span>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search by track name, artist name, folder..."
+                    className="w-full pl-10 pr-4 py-3 text-xs rounded-xl bg-[#0b1021] border border-white/5 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 transition-all shadow-inner"
+                  />
+                </div>
+
+                {/* Song list layout (Strictly Solid, Edge-to-Edge rows) */}
+                <div className="w-full bg-[#090e1e] border border-white/5 rounded-2xl p-1 sm:p-2 shadow-2xl space-y-1 divide-y divide-white/[0.03]">
+                  {filteredSongs.length === 0 ? (
+                    <div className="py-20 text-center text-xs text-slate-400 space-y-3">
+                      <Music2 className="w-12 h-12 mx-auto text-slate-700" />
+                      <p className="text-slate-500 font-medium">No matching songs found in your library.</p>
+                    </div>
+                  ) : (
+                    filteredSongs.map((song, idx) => {
+                      const isCurrent = song.url === songUrl || songName.includes(song.title);
+                      const isFav = favorites.includes(song.id);
+                      return (
+                        <div
+                          key={song.id || idx}
+                          onClick={() => {
+                            setSong(song.url, `${song.title} — ${song.artist}`);
+                          }}
+                          className={`flex items-center justify-between p-3.5 sm:p-4 rounded-xl cursor-pointer transition-all ${
+                            isCurrent
+                              ? 'bg-indigo-600/15 border-l-4 border-indigo-500 text-indigo-300 font-semibold shadow-inner'
+                              : 'hover:bg-[#111933] border-l-4 border-transparent text-slate-200'
+                          }`}
+                        >
+                          {/* Left Details */}
+                          <div className="flex items-center gap-3.5 min-w-0 pr-2">
+                            {/* CD Artwork icon / Current Playing indicator */}
+                            <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                              isCurrent ? 'bg-indigo-600 text-white shadow-lg' : 'bg-[#0b0f1d] border border-white/5 text-slate-500'
+                            }`}>
+                              {isCurrent && isPlaying ? (
+                                <span className="flex items-end gap-0.5 h-3">
+                                  <span className="w-0.5 h-3 bg-white animate-pulse" />
+                                  <span className="w-0.5 h-2 bg-white animate-pulse delay-75" />
+                                  <span className="w-0.5 h-2.5 bg-white animate-pulse delay-150" />
+                                </span>
+                              ) : (
+                                <Music2 className="w-4 h-4" />
+                              )}
+                            </div>
+
+                            <div className="flex flex-col min-w-0">
+                              <span className={`text-xs sm:text-sm font-semibold truncate tracking-wide leading-tight ${isCurrent ? 'text-indigo-200' : 'text-slate-100'}`}>
+                                {song.title}
+                              </span>
+                              <span className="text-[10px] sm:text-xs text-slate-400 truncate mt-0.5">
+                                {song.artist || 'Local Audio'}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Right Controls */}
+                          <div className="flex items-center gap-3 shrink-0">
+                            {/* Favorite toggle option */}
+                            <button
+                              onClick={(e) => toggleFavorite(song.id, e)}
+                              className={`p-2 rounded-lg transition-colors hover:bg-white/5 ${
+                                isFav ? 'text-rose-500' : 'text-slate-500 hover:text-slate-300'
+                              }`}
+                              title="Like Song"
+                            >
+                              <Heart className={`w-4 h-4 ${isFav ? 'fill-current' : ''}`} />
+                            </button>
+
+                            <span className="text-[10px] sm:text-xs font-mono text-slate-500 tabular-nums">
+                              {formatAudioTime(song.duration)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* Library Footer info */}
+                <div className="flex justify-between items-center text-[10px] sm:text-xs text-slate-500 px-1 pt-1">
+                  <span>Device Library Scanned</span>
+                  <button
+                    onClick={() => localMusicService.requestPermissionAndScan()}
+                    className="text-indigo-400 hover:text-indigo-300 font-bold transition-colors"
+                  >
+                    Rescan Songs
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 
+            =========================================================================
+            3. PREMIUM SOLID BOTTOM PLAYER CONTROLLER DECK
+            - Contains a full-sized seekbar, play/pause, prev/next, shuffle, and repeat
+            - Completely Solid Theme, NO Glassmorphism, NO margins
+            =========================================================================
+          */}
+          <div className="fixed bottom-0 left-0 right-0 bg-[#090e1f] border-t border-white/5 p-4 sm:p-5 flex flex-col gap-3.5 z-30 shadow-2xl pb-[calc(14px+env(safe-area-inset-bottom,0px))]">
+            
+            {/* Direct, non-glass timeline slider track */}
+            <div className="space-y-1">
+              <div
+                ref={libTrackContainerRef}
+                onPointerDown={(e) => handleTrackPointerDown(e, true)}
+                onPointerMove={(e) => handleTrackPointerMove(e, true)}
+                onPointerUp={(e) => handleTrackPointerUp(e, true)}
+                onPointerCancel={(e) => handleTrackPointerUp(e, true)}
+                role="slider"
+                aria-label="Seek track"
+                aria-valuemin={0}
+                aria-valuemax={validDuration}
+                tabIndex={0}
+                className="relative w-full h-4 flex items-center select-none cursor-pointer group touch-none animate-fade-in"
+              >
+                {/* Solid Background timeline channel */}
+                <div className="w-full h-1 sm:h-1.5 rounded-full bg-white/10 overflow-hidden relative pointer-events-none">
+                  <div
+                    ref={libProgressFillRef}
+                    className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-indigo-300 will-change-[width]"
+                    style={{ width: '0%' }}
+                  />
+                </div>
+
+                {/* Solid indicator point */}
+                <div
+                  ref={libProgressKnobRef}
+                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3.5 h-3.5 rounded-full bg-slate-100 shadow-[0_0_8px_rgba(99,102,241,0.8)] border border-indigo-400 pointer-events-none transition-transform group-hover:scale-110 will-change-[left]"
+                  style={{ left: '0%' }}
+                  aria-hidden="true"
+                />
+              </div>
+
+              {/* Timestamp display row */}
+              <div className="flex justify-between items-center text-[10px] sm:text-xs text-slate-400 font-mono tabular-nums px-0.5">
+                <span ref={libCurrentTimeSpanRef}>00:00</span>
+                <span>{formatAudioTime(validDuration)}</span>
+              </div>
+            </div>
+
+            {/* Bottom Controls Row: Song Information & Buttons */}
+            <div className="flex items-center justify-between gap-4">
+              {/* Left Side: Playing Song Meta */}
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <div className="flex flex-col min-w-0">
+                  <span className="text-xs sm:text-sm font-bold text-slate-100 truncate tracking-wide">
+                    {songName}
+                  </span>
+                  <p className="text-[10px] text-indigo-400 truncate mt-0.5 flex items-center gap-1 font-semibold tracking-wider">
+                    <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
+                    <span>Now Playing</span>
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => setIsPlaylistModalOpen(false)}
-                className="text-slate-400 hover:text-slate-200 p-1.5 rounded-lg hover:bg-white/5 transition-colors"
-                aria-label="Close library"
-              >
-                <X className="w-4 h-4" />
-              </button>
+
+              {/* Right Side: Media Controls Panel */}
+              <div className="flex items-center gap-3.5 shrink-0 select-none">
+                {/* Shuffle Button */}
+                <button
+                  onClick={() => setIsShuffle(!isShuffle)}
+                  className={`p-1.5 transition-colors active:scale-95 ${
+                    isShuffle ? 'text-indigo-400 shadow-[0_0_6px_rgba(99,102,241,0.4)]' : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                  title={isShuffle ? 'Shuffle: On' : 'Shuffle: Off'}
+                >
+                  <Shuffle className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                </button>
+
+                {/* Previous Button */}
+                <button
+                  onClick={handlePlayPrevious}
+                  className="p-1.5 text-slate-300 hover:text-white transition-colors active:scale-95"
+                  title="Previous Song"
+                >
+                  <SkipBack className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                </button>
+
+                {/* Main Play/Pause Button */}
+                <button
+                  onClick={togglePlay}
+                  disabled={isLoading}
+                  className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-indigo-600 hover:bg-indigo-500 flex items-center justify-center text-white shadow-lg active:scale-95 transition-all shrink-0"
+                >
+                  {isLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                  ) : isPlaying ? (
+                    <Pause className="w-4 h-4 fill-current text-white" />
+                  ) : (
+                    <Play className="w-4 h-4 fill-current text-white ml-0.5" />
+                  )}
+                </button>
+
+                {/* Next Button */}
+                <button
+                  onClick={handlePlayNext}
+                  className="p-1.5 text-slate-300 hover:text-white transition-colors active:scale-95"
+                  title="Next Song"
+                >
+                  <SkipForward className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                </button>
+
+                {/* Repeat Button */}
+                <button
+                  onClick={handleCycleRepeat}
+                  className={`p-1.5 transition-colors active:scale-95 ${
+                    repeatMode !== 'off' ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                  title={`Repeat: ${repeatMode}`}
+                >
+                  {repeatMode === 'one' ? <Repeat1 className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-rose-400" /> : <Repeat className="w-4 h-4 sm:w-4.5 sm:h-4.5" />}
+                </button>
+              </div>
             </div>
 
-            {/* Search filter input */}
-            <div className="mt-3 shrink-0">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search songs, artists, albums..."
-                className="w-full px-3 py-2 text-xs rounded-xl bg-slate-900/80 border border-white/10 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-400/80 transition-colors"
-              />
-            </div>
-
-            {/* Song List (Scrollable) */}
-            <div className="mt-3 overflow-y-auto flex-1 space-y-1.5 pr-1 divide-y divide-white/[0.04]">
-              {filteredSongs.length === 0 ? (
-                <div className="py-8 text-center text-xs text-slate-400">
-                  No matching local songs found.
-                </div>
-              ) : (
-                filteredSongs.map((song) => {
-                  const isCurrent = song.url === songUrl || songName.includes(song.title);
-                  return (
-                    <div
-                      key={song.id}
-                      onClick={() => {
-                        setSong(song.url, `${song.title} — ${song.artist}`);
-                        setIsPlaylistModalOpen(false);
-                      }}
-                      className={`flex items-center justify-between p-2.5 rounded-xl cursor-pointer transition-all ${
-                        isCurrent
-                          ? 'bg-indigo-600/25 border border-indigo-400/40 shadow-inner'
-                          : 'hover:bg-white/[0.06] border border-transparent'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 min-w-0 pr-2">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                          isCurrent ? 'bg-indigo-500 text-white' : 'bg-white/10 text-indigo-300'
-                        }`}>
-                          <Music2 className="w-4 h-4" />
-                        </div>
-                        <div className="flex flex-col min-w-0">
-                          <span className={`text-xs font-medium truncate ${isCurrent ? 'text-indigo-200 font-semibold' : 'text-slate-200'}`}>
-                            {song.title}
-                          </span>
-                          <span className="text-[10px] text-slate-400 truncate">
-                            {song.artist} {song.album ? `• ${song.album}` : ''}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="text-[10px] font-mono text-slate-400 tabular-nums">
-                          {formatAudioTime(song.duration)}
-                        </span>
-                        {isCurrent && isPlaying ? (
-                          <span className="flex items-end gap-0.5 h-3 px-1">
-                            <span className="w-0.5 h-full bg-indigo-400 animate-pulse" />
-                            <span className="w-0.5 h-2/3 bg-indigo-300 animate-pulse delay-75" />
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Footer */}
-            <div className="mt-3 pt-3 border-t border-white/10 flex items-center justify-between shrink-0 text-[11px] text-slate-400">
-              <span>Built-in & Local MediaStore</span>
-              <button
-                onClick={() => {
-                  localMusicService.requestPermissionAndScan();
-                }}
-                className="text-indigo-300 hover:text-indigo-200 font-medium transition-colors"
-              >
-                Rescan Device Library
-              </button>
-            </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

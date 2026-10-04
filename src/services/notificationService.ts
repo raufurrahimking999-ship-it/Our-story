@@ -269,6 +269,65 @@ class NotificationService {
       } catch {}
     }
   }
+
+  /**
+   * Immediately triggers a single test notification matching the style, channels,
+   * templates, and icons of the existing notifications for direct debugging on APK/Web.
+   */
+  public async triggerImmediateTestNotification(): Promise<void> {
+    try {
+      const now = Date.now();
+      const startMs = RELATIONSHIP_CONFIG.startTimestamp;
+      const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+      const currentCompletedDays = Math.floor(Math.max(0, now - startMs) / ONE_DAY_MS) || 1;
+
+      const messageTemplate = ROTATING_ROMANTIC_MESSAGES[currentCompletedDays % ROTATING_ROMANTIC_MESSAGES.length];
+      const fullMessageText = `${messageTemplate.summary} — ${messageTemplate.body}`;
+
+      if (Capacitor.isNativePlatform()) {
+        const permStatus = await LocalNotifications.checkPermissions();
+        if (permStatus.display !== 'granted') {
+          await LocalNotifications.requestPermissions();
+        }
+
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              id: 99999,
+              title: 'Our Little Story 🤍 (Test)',
+              body: fullMessageText,
+              schedule: { at: new Date(Date.now() + 500) }, // Trigger in 500ms
+              channelId: 'daily_anniversary_channel',
+              smallIcon: 'icon',
+              iconColor: '#818cf8',
+              autoCancel: true,
+              extra: {
+                dayCount: currentCompletedDays,
+                milestoneTime: now,
+                isTest: true,
+              },
+            }
+          ]
+        });
+      } else {
+        if (typeof window !== 'undefined' && 'Notification' in window) {
+          if (Notification.permission !== 'granted') {
+            await Notification.requestPermission();
+          }
+          if (Notification.permission === 'granted') {
+            new Notification('Our Little Story 🤍 (Test)', {
+              body: fullMessageText,
+              icon: '/icon-192.png',
+              badge: '/favicon.png',
+              tag: `test-anniversary-${now}`,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to trigger immediate test notification:', e);
+    }
+  }
 }
 
 export const notificationService = new NotificationService();
