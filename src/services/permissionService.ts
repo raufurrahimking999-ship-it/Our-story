@@ -1,6 +1,5 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import { Filesystem } from '@capacitor/filesystem';
 
 export interface PermissionState {
   audio: 'granted' | 'denied' | 'prompt';
@@ -9,6 +8,14 @@ export interface PermissionState {
   needsSetup: boolean;
   isNative: boolean;
 }
+
+interface PermissionBridgePlugin {
+  checkAudioPermission(): Promise<{ status: 'granted' | 'denied' | 'prompt' }>;
+  requestAudioPermission(): Promise<{ granted: boolean }>;
+  openAppSettings(): Promise<{ success: boolean }>;
+}
+
+const PermissionBridge = registerPlugin<PermissionBridgePlugin>('PermissionBridge');
 
 const STORAGE_KEY = 'our_story_permissions_granted';
 
@@ -47,14 +54,11 @@ class PermissionService {
     let notifStatus: 'granted' | 'denied' | 'prompt' = 'prompt';
 
     try {
-      // 1. Check Filesystem / Storage permission
-      const fsStatus = await Filesystem.checkPermissions();
-      if (fsStatus.publicStorage === 'granted') {
-        audioStatus = 'granted';
-      } else if (fsStatus.publicStorage === 'denied') {
-        audioStatus = 'denied';
-      }
-    } catch {
+      // 1. Check Filesystem / Storage permission via PermissionBridge
+      const bridgeRes = await PermissionBridge.checkAudioPermission();
+      audioStatus = bridgeRes.status;
+    } catch (e) {
+      console.warn('Error checking audio permission via bridge:', e);
       // Fallback
       if (localStorage.getItem('rls_audio_perm_granted') === 'true') {
         audioStatus = 'granted';
@@ -119,14 +123,14 @@ class PermissionService {
       console.warn('Error requesting notification permissions:', e);
     }
 
-    // Step 2: Request Audio / Public Storage Permission
+    // Step 2: Request Audio Permission via PermissionBridge
     try {
-      const fsRes = await Filesystem.requestPermissions();
-      if (fsRes.publicStorage === 'granted') {
+      const bridgeRes = await PermissionBridge.requestAudioPermission();
+      if (bridgeRes.granted) {
         localStorage.setItem('rls_audio_perm_granted', 'true');
       }
     } catch (e) {
-      console.warn('Error requesting filesystem permissions:', e);
+      console.warn('Error requesting audio permissions via bridge:', e);
     }
 
     localStorage.setItem(STORAGE_KEY, 'true');
@@ -143,10 +147,11 @@ class PermissionService {
     }
 
     try {
-      const res = await Filesystem.requestPermissions();
-      const granted = res.publicStorage === 'granted';
-      if (granted) localStorage.setItem('rls_audio_perm_granted', 'true');
-      return granted;
+      const res = await PermissionBridge.requestAudioPermission();
+      if (res.granted) {
+        localStorage.setItem('rls_audio_perm_granted', 'true');
+      }
+      return res.granted;
     } catch {
       return false;
     }
@@ -170,6 +175,20 @@ class PermissionService {
       if (granted) localStorage.setItem('rls_notif_perm_granted', 'true');
       return granted;
     } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Open Android App Info settings screen dynamically
+   */
+  public async openAppSettings(): Promise<boolean> {
+    if (!Capacitor.isNativePlatform()) return false;
+    try {
+      const res = await PermissionBridge.openAppSettings();
+      return !!res.success;
+    } catch (e) {
+      console.error('Failed to open app settings via bridge:', e);
       return false;
     }
   }

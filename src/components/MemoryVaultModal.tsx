@@ -595,6 +595,7 @@ export const MemoryVaultModal: React.FC<MemoryVaultModalProps> = ({ isOpen, onCl
                   ref={restoreFileInputRef}
                   type="file"
                   accept=".enc,.json"
+                  onClick={() => vaultService.setFilePicking(true)}
                   onChange={handleRestoreFileSelected}
                   className="w-full text-xs text-slate-300 file:mr-2 file:py-1 file:px-2 file:rounded-lg file:border-0 file:text-[11px] file:bg-indigo-600 file:text-white"
                 />
@@ -632,11 +633,15 @@ export const MemoryVaultModal: React.FC<MemoryVaultModalProps> = ({ isOpen, onCl
                     type="file"
                     accept="image/*,video/*"
                     multiple
+                    onClick={() => vaultService.setFilePicking(true)}
                     onChange={handleFileImport}
                     className="hidden"
                   />
                   <button
-                    onClick={() => fileInputRef.current?.click()}
+                    onClick={() => {
+                      vaultService.setFilePicking(true);
+                      fileInputRef.current?.click();
+                    }}
                     className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl shadow transition-all active:scale-95"
                   >
                     <Plus className="w-3.5 h-3.5" />

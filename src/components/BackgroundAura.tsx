@@ -73,8 +73,9 @@ export const BackgroundAura: React.FC = () => {
     const hues = [225, 235, 248, 260, 335, 345, 352];
 
     const createHeart = (idx: number, startOffscreenFar = false): LoveParticle => {
-      const scale = Math.random() * 8 + 6; // Proportional 1:1 scale
-      const depthFactor = (scale - 6) / 8; 
+      // Slightly larger scale (+15-20%)
+      const scale = Math.random() * 10 + 8.5; 
+      const depthFactor = (scale - 8.5) / 10; 
 
       // DOMINANT VERTICAL UPWARD MOVEMENT (Slightly faster for more clean flow)
       const speedY = 0.35 + depthFactor * 0.35 + Math.random() * 0.12; 
@@ -82,7 +83,7 @@ export const BackgroundAura: React.FC = () => {
       // VERY SUBTLE HORIZONTAL DRIFT (Extremely small sway amplitude)
       const swayAmp = 0.03 + depthFactor * 0.04 + Math.random() * 0.02; 
       
-      const maxOpacity = 0.1 + depthFactor * 0.14 + Math.random() * 0.04; 
+      const maxOpacity = 0.12 + depthFactor * 0.16 + Math.random() * 0.04; 
       
       const swayFreq = 0.006 + Math.random() * 0.005;
       const swayPhase = Math.random() * Math.PI * 2;
@@ -93,9 +94,12 @@ export const BackgroundAura: React.FC = () => {
       const initialOffset = startOffscreenFar ? 30 : 40 + (idx * 85);
       const y = height + initialOffset + Math.random() * 40;
 
+      // Stratified Even Grid distribution across screen columns to prevent clustering/clumping
+      const colWidth = width / loveParticleCount;
+      const x = colWidth * (idx % loveParticleCount) + Math.random() * (colWidth * 0.4) + colWidth * 0.3;
+
       return {
-        // Start horizontal coordinate inside safe window margins
-        x: 40 + Math.random() * (width - 80),
+        x,
         y,
         scale,
         speedY,
@@ -126,7 +130,7 @@ export const BackgroundAura: React.FC = () => {
       phase: Math.random() * Math.PI * 2,
     }));
 
-    // Draw perfectly symmetric, unwarped geometric vector heart (Classic 1:1 ratio)
+    // Draw perfectly symmetric, unwarped geometric vector heart (Classic 1:1 ratio) with glossy glass highlight and glowing edges
     const drawSoftHeart = (
       x: number,
       y: number,
@@ -141,36 +145,71 @@ export const BackgroundAura: React.FC = () => {
       ctx.translate(x, y);
       ctx.rotate(rotation);
 
-      ctx.shadowBlur = size * 1.25;
-      ctx.shadowColor = `hsla(${hue}, 85%, 72%, ${opacity * 0.75})`;
-      ctx.fillStyle = `hsla(${hue}, 82%, 82%, ${opacity})`;
+      // Delicate blue-lavender outer glow
+      ctx.shadowBlur = size * 1.5;
+      ctx.shadowColor = `hsla(${hue}, 90%, 75%, ${opacity * 0.8})`;
+
+      // Premium glossy linear gradient fill (translucent glass effect)
+      const gradient = ctx.createLinearGradient(0, -size * 0.6, 0, size * 0.7);
+      gradient.addColorStop(0, `hsla(${hue}, 95%, 92%, ${opacity * 0.95})`);
+      gradient.addColorStop(0.35, `hsla(${hue}, 88%, 84%, ${opacity * 0.8})`);
+      gradient.addColorStop(1, `hsla(${hue}, 82%, 72%, ${opacity * 0.45})`);
+      ctx.fillStyle = gradient;
 
       ctx.beginPath();
-      // Start at the bottom tip
-      ctx.moveTo(0, size * 0.5);
+      // Start at top center dip
+      ctx.moveTo(0, -size * 0.3);
 
-      // Left lobe curve
+      // Left lobe
       ctx.bezierCurveTo(
-        -size * 0.6,
-        -size * 0.1,
-        -size * 0.6,
-        -size * 0.7,
-        0,
-        -size * 0.4
+        -size * 0.35, -size * 0.75, // Control point 1
+        -size * 0.75, -size * 0.35, // Control point 2
+        -size * 0.75, 0             // End point
       );
 
-      // Right lobe curve
+      // Bottom left curve to tip
       ctx.bezierCurveTo(
-        size * 0.6,
-        -size * 0.7,
-        size * 0.6,
-        -size * 0.1,
-        0,
-        size * 0.5
+        -size * 0.75, size * 0.35,  // Control point 1
+        -size * 0.35, size * 0.75,  // Control point 2
+        0, size                     // Bottom tip
       );
-      
+
+      // Bottom right curve to tip
+      ctx.bezierCurveTo(
+        size * 0.35, size * 0.75,
+        size * 0.75, size * 0.35,
+        size * 0.75, 0
+      );
+
+      // Right lobe
+      ctx.bezierCurveTo(
+        size * 0.75, -size * 0.35,
+        size * 0.35, -size * 0.75,
+        0, -size * 0.3
+      );
       ctx.closePath();
       ctx.fill();
+
+      // Delicate bright glowing edge stroke (matching blue-lavender theme)
+      ctx.shadowBlur = 0; // Disable shadow for stroke to keep it sharp and clean
+      ctx.strokeStyle = `hsla(${hue}, 95%, 90%, ${opacity * 0.7})`;
+      ctx.lineWidth = size * 0.05 + 0.6; // Scale border thickness nicely
+      ctx.stroke();
+
+      // Soft Specular Highlights (gorgeous curved 3D glass sheen at top-left lobe)
+      ctx.beginPath();
+      ctx.ellipse(
+        -size * 0.22, 
+        -size * 0.22, 
+        size * 0.20, 
+        size * 0.08, 
+        -Math.PI / 4, 
+        0, 
+        Math.PI * 2
+      );
+      ctx.fillStyle = `hsla(${hue}, 100%, 100%, ${opacity * 0.8})`;
+      ctx.fill();
+
       ctx.restore();
     };
 

@@ -62,14 +62,26 @@ export const MusicPlayerCard: React.FC = () => {
     });
   }, [songs, songUrl, isShuffle, repeatMode]);
 
-  // Initial Permission Check
+  // Initial Permission Check and Resume Listeners
   useEffect(() => {
     checkDevicePermission();
+    
     const unsubscribe = localMusicService.subscribe((list) => {
       setSongs(list);
     });
+
+    // Auto-refresh when user returns to app (e.g. after changing settings permissions)
+    const handleFocusOrResume = () => {
+      checkDevicePermission();
+    };
+    
+    window.addEventListener('focus', handleFocusOrResume);
+    document.addEventListener('visibilitychange', handleFocusOrResume);
+
     return () => {
       unsubscribe();
+      window.removeEventListener('focus', handleFocusOrResume);
+      document.removeEventListener('visibilitychange', handleFocusOrResume);
     };
   }, []);
 
@@ -87,6 +99,36 @@ export const MusicPlayerCard: React.FC = () => {
     setHasPermission(granted);
     if (granted) {
       await localMusicService.requestPermissionAndScan();
+    } else {
+      const confirmOpen = window.confirm(
+        "Storage / Media access is required to play local songs. Would you like to open Settings to enable it?"
+      );
+      if (confirmOpen) {
+        await permissionService.openAppSettings();
+      }
+    }
+  };
+
+  const handleOpenLibrary = async () => {
+    const status = await permissionService.checkPermissions();
+    if (status.audio === 'granted') {
+      setHasPermission(true);
+      setIsLibraryOpen(true);
+      localMusicService.requestPermissionAndScan();
+    } else {
+      const granted = await permissionService.requestAudioPermission();
+      setHasPermission(granted);
+      if (granted) {
+        setIsLibraryOpen(true);
+        localMusicService.requestPermissionAndScan();
+      } else {
+        const confirmOpen = window.confirm(
+          "Storage / Media access is required to access your device songs. Would you like to open Settings to enable it?"
+        );
+        if (confirmOpen) {
+          await permissionService.openAppSettings();
+        }
+      }
     }
   };
 
@@ -309,7 +351,7 @@ export const MusicPlayerCard: React.FC = () => {
             <div className="flex flex-col min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
                 <button
-                  onClick={() => setIsLibraryOpen(true)}
+                  onClick={handleOpenLibrary}
                   className="text-xs sm:text-sm font-medium text-slate-100 truncate tracking-wide leading-tight text-left hover:text-indigo-200 transition-colors"
                   title="Open Dedicated Song List"
                 >
@@ -363,7 +405,7 @@ export const MusicPlayerCard: React.FC = () => {
 
             {/* Dedicated Song List Trigger */}
             <button
-              onClick={() => setIsLibraryOpen(true)}
+              onClick={handleOpenLibrary}
               className="p-1.5 rounded-lg text-indigo-300 hover:text-indigo-200 transition-colors active:scale-95 ml-0.5"
               title="Open full-screen Song List"
               aria-label="Open full-screen Song List"

@@ -685,6 +685,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
         type="file"
         accept="image/*,video/*,application/*,text/*"
         multiple
+        onClick={() => vaultService.setFilePicking(true)}
         onChange={handleFileImport}
         className="hidden"
       />
@@ -966,9 +967,13 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                   ref={restoreFileInputRef}
                   type="file"
                   accept=".enc,.json"
+                  onClick={() => vaultService.setFilePicking(true)}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
-                    if (!file) return;
+                    if (!file) {
+                      vaultService.setFilePicking(false);
+                      return;
+                    }
                     const reader = new FileReader();
                     reader.onload = (event) => {
                       const content = event.target?.result as string;
@@ -976,6 +981,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                         setRestoreFileContent(content);
                         setErrorMsg('Backup loaded. Enter password below to confirm.');
                       }
+                      setTimeout(() => vaultService.setFilePicking(false), 500);
                     };
                     reader.readAsText(file);
                   }}
@@ -1074,7 +1080,10 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                 </div>
                 <p className="text-xs text-slate-400">Our little moments, kept forever.</p>
                 <button
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => {
+                    vaultService.setFilePicking(true);
+                    fileInputRef.current?.click();
+                  }}
                   className="px-4 py-2 text-xs font-medium text-white bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 rounded-xl shadow-[0_0_15px_rgba(99,102,241,0.25)] mt-2"
                 >
                   Add Photos / Videos

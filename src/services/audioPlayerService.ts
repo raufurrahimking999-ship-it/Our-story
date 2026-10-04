@@ -3,13 +3,13 @@
  * Inspired by Lark Player capabilities
  * 
  * Bundled Offline Native Audio Engine:
- * - Direct local asset playback via persistent singleton HTMLAudioElement
- * - 100% offline ready for built Android APK & Capacitor WebViews
- * - Full background & screen-off audio playback support via Android MediaSession API
- * - Media notification and lock-screen controls support
- * - Expert Web Audio API Keep-Alive Context & Wakelock to prevent Android WebView suspension/stuttering in background
+ * - Direct local asset playback via persistent singleton HTMLAudioElement (Web)
+ * - 100% offline ready for built Android APK & Capacitor WebViews (Native)
+ * - Uses native AndroidX Media3 ExoPlayer & MediaSessionService in the native layer (survives swipes)
+ * - Native lock screen & media notification integration
  */
 
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { RELATIONSHIP_CONFIG, DEFAULT_LOCAL_AUDIO_PATH } from '../config';
 
 export type RepeatMode = 'off' | 'all' | 'one';
@@ -87,6 +87,29 @@ export function extractYouTubeId(url: string): string | null {
   return match ? match[1] : null;
 }
 
+// -------------------------------------------------------------------------
+// Capacitor Native Audio Plugin Bridge
+// -------------------------------------------------------------------------
+interface NativeAudioPlugin {
+  playSong(options: { url: string; title: string; artist: string }): Promise<{ success: boolean }>;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  seek(options: { seconds: number }): Promise<void>;
+  setVolume(options: { volume: number }): Promise<void>;
+  getState(): Promise<{
+    isPlaying: boolean;
+    currentTime: number;
+    duration: number;
+    url: string;
+    title: string;
+    artist: string;
+    isEnded: boolean;
+  }>;
+  stopPlayback(): Promise<void>;
+}
+
+const NativeAudio = registerPlugin<NativeAudioPlugin>('NativeAudio');
+
 class AudioPlayerService {
   private audioElement: HTMLAudioElement | null = null;
   private ytPlayer: YTPlayerInstance | null = null;
@@ -111,17 +134,26 @@ class AudioPlayerService {
 
   private subscribers = new Set<(state: AudioPlayerState) => void>();
 
-  // Background Web Audio Keep-Alive Context & Wakelock to prevent Android WebView suspension/stuttering
+  // Background Web Audio Keep-Alive Context & Wakelock
   private keepAliveCtx: AudioContext | null = null;
   private keepAliveOsc: OscillatorNode | null = null;
   private keepAliveGain: GainNode | null = null;
   private wakeLock: any = null;
+
+  // Native Polling
+  private nativePollInterval: any = null;
 
   constructor() {
     this.loadSavedSong();
     if (typeof window !== 'undefined') {
       this.initGlobalGestureUnlock();
       this.initMediaSession();
+      
+      // Auto-start polling if native
+      if (Capacitor.isNativePlatform()) {
+        this.startNativePolling();
+        this.syncNativeState();
+      }
     }
   }
 
@@ -145,8 +177,68 @@ class AudioPlayerService {
     if (callbacks.onPrev) this.onPrevCallback = callbacks.onPrev;
   }
 
+  // Polling loop to keep web UI and native player 100% in-sync
+  private startNativePolling() {
+    if (this.nativePollInterval) return;
+    this.nativePollInterval = setInterval(async () => {
+      await this.syncNativeState();
+    }, 400);
+  }
+
+  private async syncNativeState() {
+    if (!Capacitor.isNativePlatform()) return;
+    try {
+      const state = await NativeAudio.getState();
+      this.isPlaying = state.isPlaying;
+      this.isLoading = false;
+      
+      if (state.duration > 0) {
+        this.duration = state.duration;
+      }
+      if (state.currentTime >= 0) {
+        this.lastKnownTime = state.currentTime;
+      }
+
+      if (state.isEnded) {
+        this.handleNativeEnded();
+      }
+
+      // If a song is currently playing in background and we re-open the app,
+      // update our web state variables to match the background player dynamically!
+      if (state.url && state.url !== this.songUrl) {
+        this.songUrl = state.url;
+        this.songName = state.title || 'Our Special Song';
+        this.isCustom = true;
+      }
+      this.notify();
+    } catch (e) {
+      console.warn('Error syncing native player state:', e);
+    }
+  }
+
+  private handleNativeEnded() {
+    if (this.repeatMode === 'one') {
+      NativeAudio.seek({ seconds: 0 });
+      NativeAudio.resume();
+    } else if (this.onEndedCallback) {
+      this.onEndedCallback();
+    } else if (this.repeatMode === 'all') {
+      NativeAudio.seek({ seconds: 0 });
+      NativeAudio.resume();
+    } else {
+      this.isPlaying = false;
+      this.notify();
+    }
+  }
+
   public init() {
     if (typeof window === 'undefined') return;
+
+    if (Capacitor.isNativePlatform()) {
+      this.isLoading = false;
+      this.syncNativeState();
+      return;
+    }
 
     const ytId = extractYouTubeId(this.songUrl);
     if (ytId) {
@@ -464,6 +556,7 @@ class AudioPlayerService {
 
   private initGlobalGestureUnlock() {
     const handleGesture = async () => {
+      if (Capacitor.isNativePlatform()) return;
       const isYt = Boolean(extractYouTubeId(this.songUrl));
       if (isYt) {
         if (this.ytPlayer && this.isYtReady && !this.isPlaying) {
@@ -490,6 +583,10 @@ class AudioPlayerService {
   }
 
   private setSystemVolume(vol: number) {
+    if (Capacitor.isNativePlatform()) {
+      NativeAudio.setVolume({ volume: this.isMuted ? 0 : vol });
+      return;
+    }
     const isYt = Boolean(extractYouTubeId(this.songUrl));
     if (isYt && this.ytPlayer && this.isYtReady) {
       try {
@@ -506,8 +603,9 @@ class AudioPlayerService {
     }
   }
 
-  // Web Audio Context Keep-Alive & WakeLock to prevent WebView background throttling
+  // Web Audio Context Keep-Alive & WakeLock
   private startBackgroundKeepAlive() {
+    if (Capacitor.isNativePlatform()) return;
     try {
       if (typeof window === 'undefined') return;
       const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
@@ -523,7 +621,6 @@ class AudioPlayerService {
           ctx.resume();
         }
 
-        // Re-create oscillator node to sustain active processing
         if (!this.keepAliveOsc) {
           const osc = ctx.createOscillator();
           const gainNode = ctx.createGain();
@@ -531,7 +628,6 @@ class AudioPlayerService {
           this.keepAliveOsc = osc;
           this.keepAliveGain = gainNode;
           
-          // Silent frequency processing that prevents WebView system throttling
           gainNode.gain.value = 0.001; 
           
           osc.connect(gainNode);
@@ -541,7 +637,6 @@ class AudioPlayerService {
         }
       }
 
-      // Request Screen/CPU Wake Lock
       this.requestWakeLock();
     } catch (e) {
       console.warn('Keep-Alive initialization failed:', e);
@@ -549,6 +644,7 @@ class AudioPlayerService {
   }
 
   private stopBackgroundKeepAlive() {
+    if (Capacitor.isNativePlatform()) return;
     try {
       if (this.keepAliveOsc) {
         try { this.keepAliveOsc.stop(); } catch {}
@@ -587,6 +683,9 @@ class AudioPlayerService {
   }
 
   public getCurrentTime(): number {
+    if (Capacitor.isNativePlatform()) {
+      return this.lastKnownTime;
+    }
     const isYt = Boolean(extractYouTubeId(this.songUrl));
     if (isYt && this.ytPlayer && this.isYtReady) {
       try {
@@ -607,6 +706,13 @@ class AudioPlayerService {
   }
 
   public async play(): Promise<void> {
+    if (Capacitor.isNativePlatform()) {
+      await NativeAudio.resume();
+      this.isPlaying = true;
+      this.notify();
+      return;
+    }
+
     const isYt = Boolean(extractYouTubeId(this.songUrl));
     this.setSystemVolume(1.0);
 
@@ -642,6 +748,13 @@ class AudioPlayerService {
   }
 
   public pause(): void {
+    if (Capacitor.isNativePlatform()) {
+      NativeAudio.pause();
+      this.isPlaying = false;
+      this.notify();
+      return;
+    }
+
     const isYt = Boolean(extractYouTubeId(this.songUrl));
 
     if (isYt && this.ytPlayer) {
@@ -674,10 +787,16 @@ class AudioPlayerService {
   }
 
   public seek(targetSeconds: number): void {
-    const isYt = Boolean(extractYouTubeId(this.songUrl));
     const safeTarget = Math.max(0, Math.min(targetSeconds, Math.max(0, this.duration - 0.1)));
-
     this.lastKnownTime = safeTarget;
+
+    if (Capacitor.isNativePlatform()) {
+      NativeAudio.seek({ seconds: safeTarget });
+      this.notify();
+      return;
+    }
+
+    const isYt = Boolean(extractYouTubeId(this.songUrl));
     this.setSystemVolume(1.0);
 
     if (isYt && this.ytPlayer && this.isYtReady) {
@@ -739,6 +858,17 @@ class AudioPlayerService {
     this.songName = detectedName || 'Custom Song';
     this.isCustom = true;
 
+    if (Capacitor.isNativePlatform()) {
+      NativeAudio.playSong({ 
+        url: trimmedUrl, 
+        title: this.songName, 
+        artist: RELATIONSHIP_CONFIG.coupleSignature 
+      });
+      this.isPlaying = true;
+      this.notify();
+      return;
+    }
+
     this.updateMediaSessionMetadata();
 
     const isYt = Boolean(extractYouTubeId(this.songUrl));
@@ -763,6 +893,17 @@ class AudioPlayerService {
     this.songUrl = DEFAULT_LOCAL_AUDIO_PATH;
     this.songName = RELATIONSHIP_CONFIG.songName;
     this.isCustom = false;
+
+    if (Capacitor.isNativePlatform()) {
+      NativeAudio.playSong({
+        url: DEFAULT_LOCAL_AUDIO_PATH,
+        title: RELATIONSHIP_CONFIG.songName,
+        artist: RELATIONSHIP_CONFIG.coupleSignature
+      });
+      this.isPlaying = true;
+      this.notify();
+      return;
+    }
 
     this.updateMediaSessionMetadata();
 
