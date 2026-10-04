@@ -1,27 +1,36 @@
 import React, { useEffect, useRef } from 'react';
 
-interface LoveParticle {
+interface HeartParticle {
   x: number;
   y: number;
-  scale: number;
+  size: number; // base scale
   speedY: number;
-  swayFreq: number;
-  swayPhase: number;
-  swayAmp: number;
+  driftX: number; // lateral constant drift
+  swayFreq: number; // lateral wave frequency
+  swayPhase: number; // lateral wave phase
+  swayAmp: number; // lateral wave amplitude
   maxOpacity: number;
   hue: number;
   rotation: number;
+  rotSpeed: number; // rotation speed
+  scaleVar: number; // scale breathing amplitude
+  scalePhase: number; // scale breathing phase
 }
 
-interface StarParticle {
+interface BubbleParticle {
   x: number;
   y: number;
   size: number;
   speedY: number;
-  speedX: number;
+  driftX: number;
+  swayFreq: number;
+  swayPhase: number;
+  swayAmp: number;
+  baseOpacity: number;
   opacity: number;
   hue: number;
-  phase: number;
+  glow: number;
+  layer: 'back' | 'mid';
 }
 
 export const BackgroundAura: React.FC = () => {
@@ -67,68 +76,124 @@ export const BackgroundAura: React.FC = () => {
     window.addEventListener('resize', handleResize);
 
     // =========================================================================
-    // ORGANIC FLOATING HEART PARTICLES (Perfect Bottom Spawn & Straight Upward Flow)
+    // HEART PARTICLES (Perfect Organic Bottom Spawn & Smooth Floating Trajectories)
     // =========================================================================
-    const loveParticleCount = 14; 
-    const hues = [225, 235, 248, 260, 335, 345, 352];
+    const heartCount = 12;
+    const heartHues = [225, 235, 250, 265, 335, 345]; // Premium bluish, lavender, violet, subtle pink
 
-    const createHeart = (idx: number, startOffscreenFar = false): LoveParticle => {
-      // Slightly larger scale (+15-20%)
-      const scale = Math.random() * 10 + 8.5; 
-      const depthFactor = (scale - 8.5) / 10; 
+    const createHeart = (startOffscreenFar = false): HeartParticle => {
+      // 3D Depth effect: larger size = closer, faster, more opaque.
+      const size = 7.0 + Math.random() * 9.0; // 7px to 16px
+      const depthFactor = (size - 7.0) / 9.0; // 0 to 1
 
-      // DOMINANT VERTICAL UPWARD MOVEMENT (Slightly faster for more clean flow)
-      const speedY = 0.35 + depthFactor * 0.35 + Math.random() * 0.12; 
+      const x = Math.random() * width;
+      // Staggered Y bottom offsets to prevent waves/clumping
+      const y = startOffscreenFar
+        ? height + 15 + Math.random() * 120
+        : Math.random() * height; // Distribute across entire screen on startup
+
+      const speedY = 0.25 + depthFactor * 0.3 + Math.random() * 0.15; // Speed proportional to size
       
-      // VERY SUBTLE HORIZONTAL DRIFT (Extremely small sway amplitude)
-      const swayAmp = 0.03 + depthFactor * 0.04 + Math.random() * 0.02; 
+      // Some drift left, some right, some travel straight
+      const driftX = (Math.random() - 0.5) * 0.25; 
       
-      const maxOpacity = 0.12 + depthFactor * 0.16 + Math.random() * 0.04; 
-      
-      const swayFreq = 0.006 + Math.random() * 0.005;
+      const swayFreq = 0.003 + Math.random() * 0.007;
       const swayPhase = Math.random() * Math.PI * 2;
-      const hue = hues[Math.floor(Math.random() * hues.length)];
+      const swayAmp = 0.1 + Math.random() * 0.4;
 
-      // Staggered bottom starting offsets to prevent clumped waves
-      // Guaranteed to start completely off-screen below the bottom edge (height + offset)
-      const initialOffset = startOffscreenFar ? 30 : 40 + (idx * 85);
-      const y = height + initialOffset + Math.random() * 40;
+      const maxOpacity = 0.1 + depthFactor * 0.25 + Math.random() * 0.05; // 0.1 to 0.4
+      const hue = heartHues[Math.floor(Math.random() * heartHues.length)];
+      
+      // Gentle initial rotation and slow sway-aligned rotation speed
+      const rotation = (Math.random() - 0.5) * 0.5;
+      const rotSpeed = (Math.random() - 0.5) * 0.003;
 
-      // Stratified Even Grid distribution across screen columns to prevent clustering/clumping
-      const colWidth = width / loveParticleCount;
-      const x = colWidth * (idx % loveParticleCount) + Math.random() * (colWidth * 0.4) + colWidth * 0.3;
+      const scaleVar = 0.04 + Math.random() * 0.08;
+      const scalePhase = Math.random() * Math.PI * 2;
 
       return {
         x,
         y,
-        scale,
+        size,
         speedY,
+        driftX,
         swayFreq,
         swayPhase,
         swayAmp,
         maxOpacity,
         hue,
-        rotation: 0,
+        rotation,
+        rotSpeed,
+        scaleVar,
+        scalePhase,
       };
     };
 
-    // Initialize ALL hearts strictly below the viewport bottom (never in the middle or upper area)
-    const loveParticles: LoveParticle[] = Array.from({ length: loveParticleCount }, (_, idx) => 
-      createHeart(idx, false)
+    // =========================================================================
+    // ROMANTIC TINY BUBBLES / PARTICLES (Layered Depth & Atmos)
+    // =========================================================================
+    const bubbleCount = 45;
+    const bubbleHues = [195, 210, 220, 250, 265, 275, 340]; // Icy blue, soft blue, lavender, violet, subtle pink
+
+    const createBubble = (startOffscreenFar = false): BubbleParticle => {
+      // Decouple size into back vs mid layer
+      const layer = Math.random() > 0.4 ? 'mid' : 'back';
+      
+      let size = 1.5;
+      if (layer === 'back') {
+        size = 1.0 + Math.random() * 1.5; // 1 to 2.5 px
+      } else {
+        size = 2.5 + Math.random() * 3.5; // 2.5 to 6 px
+      }
+
+      const x = Math.random() * width;
+      // Start randomly along the bottom & middle-lower area initially,
+      // or strictly below screen if respawning
+      const y = startOffscreenFar 
+        ? height + 10 + Math.random() * 100 
+        : Math.random() * height; // Start scattered on screen initially to avoid empty start
+
+      const speedY = layer === 'back' 
+        ? 0.12 + Math.random() * 0.18 // Very slow background particles
+        : 0.25 + Math.random() * 0.35; // Moderate speed middle layer
+
+      const driftX = (Math.random() - 0.5) * 0.1;
+      const swayFreq = 0.005 + Math.random() * 0.008;
+      const swayPhase = Math.random() * Math.PI * 2;
+      const swayAmp = 0.15 + Math.random() * 0.5;
+
+      const baseOpacity = layer === 'back'
+        ? 0.08 + Math.random() * 0.12 // Faint background opacity
+        : 0.16 + Math.random() * 0.24; // Soft glowing middle opacity
+
+      const hue = bubbleHues[Math.floor(Math.random() * bubbleHues.length)];
+      const glow = layer === 'back' ? 1 : 2 + Math.random() * 3;
+
+      return {
+        x,
+        y,
+        size,
+        speedY,
+        driftX,
+        swayFreq,
+        swayPhase,
+        swayAmp,
+        baseOpacity,
+        opacity: baseOpacity,
+        hue,
+        glow,
+        layer,
+      };
+    };
+
+    // Initialize particles scattered on screen initially to avoid empty startup lag
+    const heartParticles: HeartParticle[] = Array.from({ length: heartCount }, () => 
+      createHeart(false)
     );
 
-    // Subtle background stars
-    const starCount = 16;
-    const starParticles: StarParticle[] = Array.from({ length: starCount }, () => ({
-      x: Math.random() * width,
-      y: Math.random() * height,
-      size: Math.random() * 1.1 + 0.5,
-      speedY: Math.random() * 0.1 + 0.03,
-      speedX: (Math.random() - 0.5) * 0.05,
-      opacity: Math.random() * 0.2 + 0.06,
-      hue: Math.random() > 0.5 ? 230 : 255,
-      phase: Math.random() * Math.PI * 2,
-    }));
+    const bubbles: BubbleParticle[] = Array.from({ length: bubbleCount }, () => 
+      createBubble(false)
+    );
 
     // Draw perfectly symmetric, unwarped geometric vector heart (Classic 1:1 ratio) with glossy glass highlight and glowing edges
     const drawSoftHeart = (
@@ -190,9 +255,9 @@ export const BackgroundAura: React.FC = () => {
       ctx.closePath();
       ctx.fill();
 
-      // Delicate bright glowing edge stroke (matching blue-lavender theme)
+      // Delicate bright glowing edge stroke
       ctx.shadowBlur = 0; // Disable shadow for stroke to keep it sharp and clean
-      ctx.strokeStyle = `hsla(${hue}, 95%, 90%, ${opacity * 0.7})`;
+      ctx.strokeStyle = `hsla(${hue}, 95%, 90%, ${opacity * 0.75})`;
       ctx.lineWidth = size * 0.05 + 0.6; // Scale border thickness nicely
       ctx.stroke();
 
@@ -220,76 +285,107 @@ export const BackgroundAura: React.FC = () => {
       tick += 1;
       ctx.clearRect(0, 0, width, height);
 
-      // Update and render each heart
-      for (let i = 0; i < loveParticles.length; i++) {
-        const p = loveParticles[i];
+      // 1. Render Layered Bubbles / Particles (Background & Middle Layer)
+      for (let i = 0; i < bubbles.length; i++) {
+        const b = bubbles[i];
+        
+        // Move upward
+        b.y -= b.speedY;
 
-        // Move primarily STRAIGHT UP
+        // Apply gentle horizontal drift and sway
+        const swayValue = Math.sin(tick * b.swayFreq + b.swayPhase);
+        b.x += b.driftX + swayValue * b.swayAmp;
+
+        // Slow fading breathing/twinkle effect
+        b.opacity = b.baseOpacity * (0.7 + 0.3 * Math.sin(tick * 0.025 + b.swayPhase));
+
+        // Reset if it exits through the top edge
+        if (b.y < -15) {
+          bubbles[i] = createBubble(true);
+          continue;
+        }
+
+        // Horizontal wrap
+        if (b.x < -15) b.x = width + 15;
+        else if (b.x > width + 15) b.x = -15;
+
+        // Organic fading at screen boundaries
+        let opacityFactor = 1.0;
+        const topFadeLimit = height * 0.15;
+        const bottomFadeLimit = height * 0.92;
+
+        if (b.y > bottomFadeLimit) {
+          opacityFactor = Math.max(0, (height - b.y) / (height - bottomFadeLimit));
+        } else if (b.y < topFadeLimit) {
+          opacityFactor = Math.max(0, b.y / topFadeLimit);
+        }
+
+        const currentOpacity = b.opacity * opacityFactor;
+
+        if (currentOpacity > 0.001) {
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+          
+          if (b.layer === 'mid') {
+            // Glowing bubble
+            ctx.shadowBlur = b.glow;
+            ctx.shadowColor = `hsla(${b.hue}, 90%, 80%, ${currentOpacity * 0.8})`;
+            ctx.fillStyle = `hsla(${b.hue}, 95%, 95%, ${currentOpacity})`;
+          } else {
+            // Background tiny particle
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = `hsla(${b.hue}, 80%, 90%, ${currentOpacity * 0.75})`;
+          }
+          
+          ctx.fill();
+          ctx.shadowBlur = 0; // reset shadow for next draws
+        }
+      }
+
+      // 2. Render Elegant Heart Particles (Foreground Layer)
+      for (let i = 0; i < heartParticles.length; i++) {
+        const p = heartParticles[i];
+
+        // Move upward
         p.y -= p.speedY;
 
-        // Extremely slow and subtle left/right drift
+        // Apply constant lateral drift + soft sinus sway
         const swayValue = Math.sin(tick * p.swayFreq + p.swayPhase);
-        p.x += swayValue * p.swayAmp;
+        p.x += p.driftX + swayValue * p.swayAmp;
 
-        // Extremely subtle natural tilt aligned with lateral drift direction (no excessive spinning)
-        p.rotation = swayValue * 0.06; 
+        // Apply gentle rotation drift over time
+        p.rotation += p.rotSpeed + Math.cos(tick * p.swayFreq) * 0.0015;
 
-        // Continues rising until they completely leave through the TOP edge of the screen
+        // Respiratory scale breathing variation
+        const currentScale = p.size * (1 + Math.sin(tick * 0.015 + p.scalePhase) * p.scaleVar);
+
+        // Reset if it exits through the top edge
         if (p.y < -35) {
-          loveParticles[i] = createHeart(i, true);
+          heartParticles[i] = createHeart(true);
           continue;
         }
 
-        // Horizontal wrap constraint (recycles if somehow pushed extremely wide)
-        if (p.x < -35 || p.x > width + 35) {
-          loveParticles[i] = createHeart(i, true);
-          continue;
-        }
+        // Wrap around horizontal boundaries if drifting too far off-screen
+        if (p.x < -35) p.x = width + 35;
+        else if (p.x > width + 35) p.x = -35;
 
-        // Organic Fading:
-        // - Gradually fade in as it enters from the absolute bottom edge of screen
-        // - Fades out slowly as it leaves through the TOP edge
+        // Organic Fading: fade in as it enters bottom, fade out near top
         let opacityFactor = 1.0;
-        const topFadeLimit = height * 0.2;
+        const topFadeLimit = height * 0.22;
         const bottomFadeLimit = height * 0.88;
 
         if (p.y > bottomFadeLimit) {
           opacityFactor = Math.max(0, (height - p.y) / (height - bottomFadeLimit));
         } else if (p.y < topFadeLimit) {
-          // Fade out smoothly only near the top edge
           opacityFactor = Math.max(0, p.y / topFadeLimit);
         }
 
-        // Absolutely invisible if still completely below viewport bottom
         if (p.y > height) {
           opacityFactor = 0;
         }
 
         const currentOpacity = p.maxOpacity * opacityFactor;
-        drawSoftHeart(p.x, p.y, p.scale, currentOpacity, p.hue, p.rotation);
-      }
-
-      // Render starry background
-      for (let i = 0; i < starParticles.length; i++) {
-        const s = starParticles[i];
-        s.y -= s.speedY;
-        s.x += Math.sin(tick * 0.01 + s.phase) * 0.06 + s.speedX;
-
-        if (s.y < -15) {
-          s.y = height + 15;
-          s.x = Math.random() * width;
-        }
-        if (s.x < -15) s.x = width + 15;
-        if (s.x > width + 15) s.x = -15;
-
-        const starOpacity = s.opacity * (0.65 + 0.35 * Math.sin(tick * 0.018 + s.phase));
-
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
-        ctx.fillStyle = `hsla(${s.hue}, 80%, 85%, ${starOpacity})`;
-        ctx.shadowBlur = 3;
-        ctx.shadowColor = `hsla(${s.hue}, 90%, 75%, ${starOpacity})`;
-        ctx.fill();
+        drawSoftHeart(p.x, p.y, currentScale, currentOpacity, p.hue, p.rotation);
       }
 
       animationFrameId = requestAnimationFrame(render);
