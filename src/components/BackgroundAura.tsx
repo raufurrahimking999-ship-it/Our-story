@@ -11,26 +11,9 @@ interface HeartParticle {
   swayAmp: number; // lateral wave amplitude
   maxOpacity: number;
   hue: number;
-  rotation: number;
-  rotSpeed: number; // rotation speed
+  rotation: number; // constant slight tilt
   scaleVar: number; // scale breathing amplitude
   scalePhase: number; // scale breathing phase
-}
-
-interface BubbleParticle {
-  x: number;
-  y: number;
-  size: number;
-  speedY: number;
-  driftX: number;
-  swayFreq: number;
-  swayPhase: number;
-  swayAmp: number;
-  baseOpacity: number;
-  opacity: number;
-  hue: number;
-  glow: number;
-  layer: 'back' | 'mid';
 }
 
 export const BackgroundAura: React.FC = () => {
@@ -76,39 +59,37 @@ export const BackgroundAura: React.FC = () => {
     window.addEventListener('resize', handleResize);
 
     // =========================================================================
-    // HEART PARTICLES (Perfect Organic Bottom Spawn & Smooth Floating Trajectories)
+    // ELEGANT HEART PARTICLES (Perfect Symmetrical Floating Hearts)
     // =========================================================================
-    const heartCount = 12;
+    const heartCount = 15;
     const heartHues = [225, 235, 250, 265, 335, 345]; // Premium bluish, lavender, violet, subtle pink
 
-    const createHeart = (startOffscreenFar = false): HeartParticle => {
-      // 3D Depth effect: larger size = closer, faster, more opaque.
-      const size = 7.0 + Math.random() * 9.0; // 7px to 16px
-      const depthFactor = (size - 7.0) / 9.0; // 0 to 1
+    const createHeart = (index?: number): HeartParticle => {
+      const size = 8.0 + Math.random() * 8.0; // 8px to 16px
+      const depthFactor = (size - 8.0) / 8.0; // 0 to 1
 
       const x = Math.random() * width;
-      // Staggered Y bottom offsets to prevent waves/clumping
-      const y = startOffscreenFar
-        ? height + 15 + Math.random() * 120
-        : Math.random() * height; // Distribute across entire screen on startup
+      
+      // Staggered Y position so they rise one after another smoothly, with no initial on-screen clutter
+      let y = height + 15 + Math.random() * 80;
+      if (typeof index === 'number') {
+        y = height + 15 + index * (75 + Math.random() * 45);
+      }
 
-      const speedY = 0.25 + depthFactor * 0.3 + Math.random() * 0.15; // Speed proportional to size
+      const speedY = 0.3 + depthFactor * 0.35 + Math.random() * 0.15; // Smooth floating speed
+      const driftX = (Math.random() - 0.5) * 0.12; // Very subtle lateral drift
       
-      // Some drift left, some right, some travel straight
-      const driftX = (Math.random() - 0.5) * 0.25; 
-      
-      const swayFreq = 0.003 + Math.random() * 0.007;
+      const swayFreq = 0.004 + Math.random() * 0.006;
       const swayPhase = Math.random() * Math.PI * 2;
-      const swayAmp = 0.1 + Math.random() * 0.4;
+      const swayAmp = 0.15 + Math.random() * 0.25;
 
-      const maxOpacity = 0.1 + depthFactor * 0.25 + Math.random() * 0.05; // 0.1 to 0.4
+      const maxOpacity = 0.12 + depthFactor * 0.22 + Math.random() * 0.06; // 0.12 to 0.4
       const hue = heartHues[Math.floor(Math.random() * heartHues.length)];
       
-      // Gentle initial rotation and slow sway-aligned rotation speed
-      const rotation = (Math.random() - 0.5) * 0.5;
-      const rotSpeed = (Math.random() - 0.5) * 0.003;
+      // Fixed subtle tilt (+/- 8 degrees max) so hearts never look crooked, twisted, or unnatural
+      const rotation = (Math.random() - 0.5) * 0.14;
 
-      const scaleVar = 0.04 + Math.random() * 0.08;
+      const scaleVar = 0.03 + Math.random() * 0.05;
       const scalePhase = Math.random() * Math.PI * 2;
 
       return {
@@ -123,79 +104,17 @@ export const BackgroundAura: React.FC = () => {
         maxOpacity,
         hue,
         rotation,
-        rotSpeed,
         scaleVar,
         scalePhase,
       };
     };
 
-    // =========================================================================
-    // ROMANTIC TINY BUBBLES / PARTICLES (Layered Depth & Atmos)
-    // =========================================================================
-    const bubbleCount = 45;
-    const bubbleHues = [195, 210, 220, 250, 265, 275, 340]; // Icy blue, soft blue, lavender, violet, subtle pink
-
-    const createBubble = (startOffscreenFar = false): BubbleParticle => {
-      // Decouple size into back vs mid layer
-      const layer = Math.random() > 0.4 ? 'mid' : 'back';
-      
-      let size = 1.5;
-      if (layer === 'back') {
-        size = 1.0 + Math.random() * 1.5; // 1 to 2.5 px
-      } else {
-        size = 2.5 + Math.random() * 3.5; // 2.5 to 6 px
-      }
-
-      const x = Math.random() * width;
-      // Start randomly along the bottom & middle-lower area initially,
-      // or strictly below screen if respawning
-      const y = startOffscreenFar 
-        ? height + 10 + Math.random() * 100 
-        : Math.random() * height; // Start scattered on screen initially to avoid empty start
-
-      const speedY = layer === 'back' 
-        ? 0.12 + Math.random() * 0.18 // Very slow background particles
-        : 0.25 + Math.random() * 0.35; // Moderate speed middle layer
-
-      const driftX = (Math.random() - 0.5) * 0.1;
-      const swayFreq = 0.005 + Math.random() * 0.008;
-      const swayPhase = Math.random() * Math.PI * 2;
-      const swayAmp = 0.15 + Math.random() * 0.5;
-
-      const baseOpacity = layer === 'back'
-        ? 0.08 + Math.random() * 0.12 // Faint background opacity
-        : 0.16 + Math.random() * 0.24; // Soft glowing middle opacity
-
-      const hue = bubbleHues[Math.floor(Math.random() * bubbleHues.length)];
-      const glow = layer === 'back' ? 1 : 2 + Math.random() * 3;
-
-      return {
-        x,
-        y,
-        size,
-        speedY,
-        driftX,
-        swayFreq,
-        swayPhase,
-        swayAmp,
-        baseOpacity,
-        opacity: baseOpacity,
-        hue,
-        glow,
-        layer,
-      };
-    };
-
-    // Initialize particles scattered on screen initially to avoid empty startup lag
-    const heartParticles: HeartParticle[] = Array.from({ length: heartCount }, () => 
-      createHeart(false)
+    // Initialize particles with sequentially staggered offsets below the screen bottom
+    const heartParticles: HeartParticle[] = Array.from({ length: heartCount }, (_, i) => 
+      createHeart(i)
     );
 
-    const bubbles: BubbleParticle[] = Array.from({ length: bubbleCount }, () => 
-      createBubble(false)
-    );
-
-    // Draw perfectly symmetric, unwarped geometric vector heart (Classic 1:1 ratio) with glossy glass highlight and glowing edges
+    // Draw perfectly symmetric, unwarped geometric vector heart (Classic 1:1 ratio) with glossy glass highlight
     const drawSoftHeart = (
       x: number,
       y: number,
@@ -212,7 +131,7 @@ export const BackgroundAura: React.FC = () => {
 
       // Delicate blue-lavender outer glow
       ctx.shadowBlur = size * 1.5;
-      ctx.shadowColor = `hsla(${hue}, 90%, 75%, ${opacity * 0.8})`;
+      ctx.shadowColor = `hsla(${hue}, 90%, 75%, ${opacity * 0.85})`;
 
       // Premium glossy linear gradient fill (translucent glass effect)
       const gradient = ctx.createLinearGradient(0, -size * 0.6, 0, size * 0.7);
@@ -285,83 +204,23 @@ export const BackgroundAura: React.FC = () => {
       tick += 1;
       ctx.clearRect(0, 0, width, height);
 
-      // 1. Render Layered Bubbles / Particles (Background & Middle Layer)
-      for (let i = 0; i < bubbles.length; i++) {
-        const b = bubbles[i];
-        
-        // Move upward
-        b.y -= b.speedY;
-
-        // Apply gentle horizontal drift and sway
-        const swayValue = Math.sin(tick * b.swayFreq + b.swayPhase);
-        b.x += b.driftX + swayValue * b.swayAmp;
-
-        // Slow fading breathing/twinkle effect
-        b.opacity = b.baseOpacity * (0.7 + 0.3 * Math.sin(tick * 0.025 + b.swayPhase));
-
-        // Reset if it exits through the top edge
-        if (b.y < -15) {
-          bubbles[i] = createBubble(true);
-          continue;
-        }
-
-        // Horizontal wrap
-        if (b.x < -15) b.x = width + 15;
-        else if (b.x > width + 15) b.x = -15;
-
-        // Organic fading at screen boundaries
-        let opacityFactor = 1.0;
-        const topFadeLimit = height * 0.15;
-        const bottomFadeLimit = height * 0.92;
-
-        if (b.y > bottomFadeLimit) {
-          opacityFactor = Math.max(0, (height - b.y) / (height - bottomFadeLimit));
-        } else if (b.y < topFadeLimit) {
-          opacityFactor = Math.max(0, b.y / topFadeLimit);
-        }
-
-        const currentOpacity = b.opacity * opacityFactor;
-
-        if (currentOpacity > 0.001) {
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
-          
-          if (b.layer === 'mid') {
-            // Glowing bubble
-            ctx.shadowBlur = b.glow;
-            ctx.shadowColor = `hsla(${b.hue}, 90%, 80%, ${currentOpacity * 0.8})`;
-            ctx.fillStyle = `hsla(${b.hue}, 95%, 95%, ${currentOpacity})`;
-          } else {
-            // Background tiny particle
-            ctx.shadowBlur = 0;
-            ctx.fillStyle = `hsla(${b.hue}, 80%, 90%, ${currentOpacity * 0.75})`;
-          }
-          
-          ctx.fill();
-          ctx.shadowBlur = 0; // reset shadow for next draws
-        }
-      }
-
-      // 2. Render Elegant Heart Particles (Foreground Layer)
+      // Render Elegant Heart Particles (Foreground Layer)
       for (let i = 0; i < heartParticles.length; i++) {
         const p = heartParticles[i];
 
-        // Move upward
+        // Move upward smoothly
         p.y -= p.speedY;
 
-        // Apply constant lateral drift + soft sinus sway
+        // Apply constant lateral drift + soft sinus sway (symmetrical movement, no twisting)
         const swayValue = Math.sin(tick * p.swayFreq + p.swayPhase);
         p.x += p.driftX + swayValue * p.swayAmp;
 
-        // Apply gentle rotation drift over time
-        p.rotation += p.rotSpeed + Math.cos(tick * p.swayFreq) * 0.0015;
-
-        // Respiratory scale breathing variation
+        // Respiratory scale breathing variation (uniform 1:1 scaling)
         const currentScale = p.size * (1 + Math.sin(tick * 0.015 + p.scalePhase) * p.scaleVar);
 
         // Reset if it exits through the top edge
         if (p.y < -35) {
-          heartParticles[i] = createHeart(true);
+          heartParticles[i] = createHeart();
           continue;
         }
 
@@ -435,7 +294,7 @@ export const BackgroundAura: React.FC = () => {
         className="absolute top-[25%] right-[20%] w-[340px] h-[340px] sm:w-[440px] sm:h-[440px] rounded-full bg-rose-950 blur-[140px] sm:blur-[180px] animate-glow-journey-4" 
       />
 
-      {/* Love particles & starlight canvas (Behind all UI cards) */}
+      {/* Symmetrical Floating Hearts Canvas (Behind all UI cards) */}
       <canvas ref={canvasRef} className="absolute inset-0 block w-full h-full" />
 
       {/* Soft Vignette Overlay */}

@@ -458,8 +458,8 @@ export const MusicPlayerCard: React.FC = () => {
               {/* Shuffle button */}
               <button
                 onClick={() => setIsShuffle(!isShuffle)}
-                className={`p-0.5 transition-colors active:scale-95 ${
-                  isShuffle ? 'text-indigo-300 shadow-[0_0_8px_rgba(129,140,248,0.5)]' : 'text-slate-500 hover:text-slate-300'
+                className={`p-1 rounded-full focus:outline-none transition-colors active:scale-95 ${
+                  isShuffle ? 'text-indigo-300 drop-shadow-[0_0_6px_rgba(129,140,248,0.65)]' : 'text-slate-500 hover:text-slate-300'
                 }`}
                 title={isShuffle ? 'Shuffle: On' : 'Shuffle: Off'}
                 aria-label="Toggle Shuffle"
@@ -748,8 +748,8 @@ export const MusicPlayerCard: React.FC = () => {
                 {/* Shuffle Button */}
                 <button
                   onClick={() => setIsShuffle(!isShuffle)}
-                  className={`p-1.5 transition-colors active:scale-95 ${
-                    isShuffle ? 'text-indigo-400 shadow-[0_0_6px_rgba(99,102,241,0.4)]' : 'text-slate-500 hover:text-slate-300'
+                  className={`p-1.5 rounded-full focus:outline-none transition-colors active:scale-95 ${
+                    isShuffle ? 'text-indigo-400 drop-shadow-[0_0_5px_rgba(99,102,241,0.65)]' : 'text-slate-500 hover:text-slate-300'
                   }`}
                   title={isShuffle ? 'Shuffle: On' : 'Shuffle: Off'}
                 >

@@ -265,9 +265,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
 
   useEffect(() => {
     const handleFocus = () => {
-      setTimeout(() => {
-        vaultService.setFilePicking(false);
-      }, 1000);
+      vaultService.setFilePicking(false);
     };
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
