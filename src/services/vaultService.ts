@@ -1,3 +1,5 @@
+import { vaultStorageNative } from './vaultStorageNative';
+
 export interface VaultFolder {
   id: string;
   name: string;
@@ -12,6 +14,7 @@ export interface VaultItem {
   name: string;
   dateAdded: number;
   size?: number;
+  privatePath?: string; // Internal private storage path (/data/user/0/.../vault_media/...)
 }
 
 const VAULT_PASS_KEY = 'rls_vault_pass_hash_secure';
@@ -352,6 +355,51 @@ class VaultService {
       } catch {}
     }
 
+    // Auto-migration & validation for genuinely private storage on native Android
+    if (items && items.length > 0 && vaultStorageNative.isNative()) {
+      for (const item of items) {
+        try {
+          if (item.privatePath) {
+            // Verify file actually exists in app-private internal storage
+            const check = await vaultStorageNative.verifyFileExists(item.privatePath);
+            if (check.exists && check.webUrl) {
+              item.dataUrl = check.webUrl;
+            } else if (item.dataUrl && !item.dataUrl.startsWith('http://localhost/_capacitor_file_')) {
+              // Re-save if file was missing from internal storage
+              const migrated = await vaultStorageNative.saveFileToPrivateVault({
+                base64Data: item.dataUrl,
+                fileName: item.name,
+                mimeType: item.type === 'video' ? 'video/mp4' : 'image/jpeg',
+              });
+              if (migrated && migrated.verified) {
+                item.privatePath = migrated.filePath;
+                item.dataUrl = migrated.webUrl;
+                item.size = migrated.size || item.size;
+                await idbSaveItem(item);
+              }
+            }
+          } else if (item.dataUrl) {
+            // Legacy item stored as base64 or public URI: migrate into private internal storage
+            const isPublicUri = item.dataUrl.startsWith('content://') || item.dataUrl.startsWith('file://');
+            const migrated = await vaultStorageNative.saveFileToPrivateVault({
+              uri: isPublicUri ? item.dataUrl : undefined,
+              base64Data: isPublicUri ? undefined : item.dataUrl,
+              fileName: item.name,
+              mimeType: item.type === 'video' ? 'video/mp4' : 'image/jpeg',
+            });
+            if (migrated && migrated.verified) {
+              item.privatePath = migrated.filePath;
+              item.dataUrl = migrated.webUrl;
+              item.size = migrated.size || item.size;
+              await idbSaveItem(item);
+            }
+          }
+        } catch (migErr) {
+          console.warn('Migration error for vault item:', item.id, migErr);
+        }
+      }
+    }
+
     this.cachedItems = items || [];
     return this.cachedItems;
   }
@@ -361,13 +409,51 @@ class VaultService {
     return this.cachedItems;
   }
 
-  public async addVaultItem(item: Omit<VaultItem, 'id' | 'dateAdded'>): Promise<boolean> {
+  public async addVaultItem(item: {
+    folderId?: string;
+    type: 'image' | 'video' | 'file';
+    dataUrl: string;
+    uri?: string;
+    name: string;
+    size?: number;
+    privatePath?: string;
+    isMove?: boolean;
+  }): Promise<boolean> {
     if (!this.isUnlocked) return false;
     try {
+      let finalPath = item.privatePath;
+      let finalWebUrl = item.dataUrl;
+      let finalSize = item.size || 0;
+
+      // Ensure file is saved & verified inside private internal storage (/data/user/0/.../vault_media/)
+      if (!finalPath || !finalWebUrl.includes('_capacitor_file_')) {
+        const savedResult = await vaultStorageNative.saveFileToPrivateVault({
+          uri: item.uri,
+          base64Data: item.dataUrl,
+          fileName: item.name,
+          mimeType: item.type === 'video' ? 'video/mp4' : 'image/jpeg',
+          isMove: item.isMove,
+        });
+
+        if (!savedResult || !savedResult.verified) {
+          console.error('Failed to verify private vault file save');
+          return false;
+        }
+
+        finalPath = savedResult.filePath;
+        finalWebUrl = savedResult.webUrl;
+        finalSize = savedResult.size;
+      }
+
       const newItem: VaultItem = {
-        ...item,
         id: 'vault-item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+        folderId: item.folderId,
+        type: item.type,
+        dataUrl: finalWebUrl,
+        name: item.name,
         dateAdded: Date.now(),
+        size: finalSize,
+        privatePath: finalPath,
       };
 
       this.cachedItems.unshift(newItem);
@@ -388,6 +474,10 @@ class VaultService {
   public async deleteVaultItem(id: string): Promise<boolean> {
     if (!this.isUnlocked) return false;
     try {
+      const itemToDelete = this.cachedItems.find(i => i.id === id);
+      if (itemToDelete?.privatePath) {
+        await vaultStorageNative.deletePrivateFile(itemToDelete.privatePath);
+      }
       this.cachedItems = this.cachedItems.filter(i => i.id !== id);
       await idbDeleteItem(id);
       this.saveItemsToLocalStorageFallback();
@@ -400,6 +490,17 @@ class VaultService {
   public async deleteVaultItemsBatch(ids: string[]): Promise<boolean> {
     if (!this.isUnlocked || !Array.isArray(ids)) return false;
     try {
+      const pathsToDelete: string[] = [];
+      this.cachedItems.forEach(item => {
+        if (ids.includes(item.id) && item.privatePath) {
+          pathsToDelete.push(item.privatePath);
+        }
+      });
+
+      if (pathsToDelete.length > 0) {
+        await vaultStorageNative.deletePrivateFilesBatch(pathsToDelete);
+      }
+
       this.cachedItems = this.cachedItems.filter(i => !ids.includes(i.id));
       await idbDeleteItemsBatch(ids);
       this.saveItemsToLocalStorageFallback();
@@ -427,23 +528,43 @@ class VaultService {
     }
   }
 
-  public copyItemsToFolder(ids: string[], targetFolderId?: string): boolean {
+  public async copyItemsToFolder(ids: string[], targetFolderId?: string): Promise<boolean> {
     if (!this.isUnlocked || !Array.isArray(ids)) return false;
     try {
       const newCopies: VaultItem[] = [];
-      this.cachedItems.forEach(item => {
+      for (const item of this.cachedItems) {
         if (ids.includes(item.id)) {
+          let newPrivatePath = item.privatePath;
+          let newWebUrl = item.dataUrl;
+
+          // Duplicate the private file in internal storage so deleting one copy does not affect the other
+          if (item.privatePath && vaultStorageNative.isNative()) {
+            try {
+              const dup = await vaultStorageNative.saveFileToPrivateVault({
+                uri: item.privatePath,
+                fileName: item.name,
+                mimeType: item.type === 'video' ? 'video/mp4' : 'image/jpeg',
+              });
+              if (dup && dup.verified) {
+                newPrivatePath = dup.filePath;
+                newWebUrl = dup.webUrl;
+              }
+            } catch {}
+          }
+
           const copyItem: VaultItem = {
             ...item,
             id: 'vault-item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
             folderId: targetFolderId,
             dateAdded: Date.now(),
-            name: item.name.includes('(Copy)') ? item.name : `${item.name} (Copy)`
+            name: item.name.includes('(Copy)') ? item.name : `${item.name} (Copy)`,
+            privatePath: newPrivatePath,
+            dataUrl: newWebUrl,
           };
           newCopies.push(copyItem);
-          idbSaveItem(copyItem);
+          await idbSaveItem(copyItem);
         }
-      });
+      }
       this.cachedItems = [...newCopies, ...this.cachedItems];
       this.saveItemsToLocalStorageFallback();
       return true;

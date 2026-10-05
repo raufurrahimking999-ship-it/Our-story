@@ -17,6 +17,10 @@ const config = {
       splashFullScreen: true,
       splashImmersive: true,
     },
+    LocalNotifications: {
+      smallIcon: 'ic_stat_heart',
+      iconColor: '#e11d48',
+    },
   },
 };
 

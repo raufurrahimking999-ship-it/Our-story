@@ -50,36 +50,67 @@
   font-family: var(--font-sans);
 }
 
-/* Real Glassmorphism surface with subtle, premium frosted blur (Android APK / WebView optimized) */
+/* Premium Liquid-Glassmorphism Surface (Subtle, Frosted, Deep Midnight-Lavender Tint) */
 .glass-panel {
-  background: rgba(14, 21, 38, 0.45);
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
+  background: linear-gradient(135deg, rgba(16, 24, 48, 0.60) 0%, rgba(10, 15, 32, 0.65) 100%);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
   transform: translateZ(0);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(165, 180, 252, 0.12);
   box-shadow: 
-    0 20px 50px rgba(0, 0, 0, 0.45),
-    inset 0 1px 0 rgba(255, 242, 245, 0.12),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+    0 24px 56px -12px rgba(2, 6, 20, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4);
 }
 
 .glass-panel-subtle {
-  background: rgba(12, 18, 33, 0.35);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
+  background: linear-gradient(135deg, rgba(14, 20, 40, 0.45) 0%, rgba(9, 13, 28, 0.50) 100%);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
   transform: translateZ(0);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(165, 180, 252, 0.09);
   box-shadow: 
-    0 12px 30px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    0 16px 36px -8px rgba(2, 6, 20, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+
+.glass-panel-romantic {
+  background: linear-gradient(135deg, rgba(20, 26, 52, 0.65) 0%, rgba(13, 17, 36, 0.70) 100%);
+  -webkit-backdrop-filter: blur(22px);
+  backdrop-filter: blur(22px);
+  transform: translateZ(0);
+  border: 1px solid rgba(244, 114, 182, 0.15);
+  box-shadow: 
+    0 24px 60px -12px rgba(2, 6, 22, 0.8),
+    0 0 28px -4px rgba(244, 114, 182, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4);
 }
 
 .glass-pill {
-  background: rgba(255, 255, 255, 0.04);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  background: rgba(255, 255, 255, 0.05);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
   transform: translateZ(0);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/* Luminous Romantic Text Glow Tokens */
+.text-glow-romantic {
+  text-shadow: 
+    0 0 24px rgba(165, 180, 252, 0.38),
+    0 0 48px rgba(244, 114, 182, 0.18),
+    0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.text-glow-lavender {
+  text-shadow: 
+    0 0 20px rgba(199, 210, 254, 0.35),
+    0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.text-glow-subtle {
+  text-shadow: 0 0 16px rgba(165, 180, 252, 0.25);
 }
 
 .glass-input-range {

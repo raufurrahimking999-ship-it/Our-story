@@ -5,6 +5,7 @@ import {
   ArrowLeft, CheckSquare, Square, Play, ArrowRight, Edit3, FolderInput, Copy, Heart
 } from 'lucide-react';
 import { vaultService, VaultItem, VaultFolder } from '../services/vaultService';
+import { vaultStorageNative } from '../services/vaultStorageNative';
 
 interface MemoryVaultGalleryModalProps {
   isOpen: boolean;
@@ -33,6 +34,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null); // null = All items
   const [folders, setFolders] = useState<VaultFolder[]>([]);
   const [items, setItems] = useState<VaultItem[]>([]);
+  const [showPrivacyNotification, setShowPrivacyNotification] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showSearch, setShowSearch] = useState<boolean>(false);
 
@@ -271,6 +273,38 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
     return () => window.removeEventListener('focus', handleFocus);
   }, []);
 
+  const handleAddMediaClick = async () => {
+    vaultService.setFilePicking(true);
+    if (vaultStorageNative.isNative()) {
+      setIsUploading(true);
+      setErrorMsg('');
+      try {
+        const picked = await vaultStorageNative.pickAndImportMedia(false);
+        if (picked && picked.length > 0) {
+          for (const item of picked) {
+            await vaultService.addVaultItem({
+              folderId: activeFolderId === 'root' ? undefined : activeFolderId || undefined,
+              type: item.type,
+              dataUrl: item.webUrl,
+              name: item.name,
+              size: item.size,
+              privatePath: item.filePath,
+            });
+          }
+          refreshData();
+          setShowPrivacyNotification(true);
+          return;
+        }
+      } catch (err: any) {
+        console.warn('Native picker cancelled or failed, falling back to file input:', err);
+      } finally {
+        setIsUploading(false);
+        setTimeout(() => vaultService.setFilePicking(false), 500);
+      }
+    }
+    fileInputRef.current?.click();
+  };
+
   const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) {
@@ -313,6 +347,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
         });
       }
       refreshData();
+      setShowPrivacyNotification(true);
     } catch (err: any) {
       console.error('File import error:', err);
       setErrorMsg(err.message || 'Error uploading file.');
@@ -450,9 +485,9 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
     refreshData();
   };
 
-  const handleCopySelectedToFolder = (targetFolderId?: string) => {
+  const handleCopySelectedToFolder = async (targetFolderId?: string) => {
     if (selectedItemIds.length === 0) return;
-    vaultService.copyItemsToFolder(selectedItemIds, targetFolderId);
+    await vaultService.copyItemsToFolder(selectedItemIds, targetFolderId);
     setSelectedItemIds([]);
     setIsSelectMode(false);
     setModalAction(null);
@@ -787,10 +822,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
               {/* Add Media (+) */}
               <button
                 type="button"
-                onClick={() => {
-                  vaultService.setFilePicking(true);
-                  fileInputRef.current?.click();
-                }}
+                onClick={handleAddMediaClick}
                 disabled={isUploading}
                 className="p-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 transition-colors shadow-[0_0_15px_rgba(99,102,241,0.3)] disabled:opacity-50"
                 title="Add Photos, Videos or Files"
@@ -1070,6 +1102,14 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
               </button>
             </div>
 
+            {/* Premium Romantic Privacy Info Banner */}
+            <div className="mb-4 mx-1 p-3.5 rounded-2xl bg-indigo-500/5 border border-indigo-400/15 text-[11px] text-indigo-300/80 flex items-start gap-2.5 shadow-inner">
+              <Lock className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+              <p className="leading-relaxed">
+                <span className="font-semibold text-indigo-200">Genuinely Private Storage:</span> Photos and videos added to Vault are saved exclusively into the app's private internal storage and excluded from Android MediaStore. They will never appear in your phone's Gallery, Google Photos, or file managers.
+              </p>
+            </div>
+
             {/* Photos & Videos Grid */}
             {filteredItems.length === 0 ? (
               <div className="py-20 text-center space-y-3">
@@ -1078,10 +1118,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                 </div>
                 <p className="text-xs text-slate-400">Our little moments, kept forever.</p>
                 <button
-                  onClick={() => {
-                    vaultService.setFilePicking(true);
-                    fileInputRef.current?.click();
-                  }}
+                  onClick={handleAddMediaClick}
                   className="px-4 py-2 text-xs font-medium text-white bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 rounded-xl shadow-[0_0_15px_rgba(99,102,241,0.25)] mt-2"
                 >
                   Add Photos / Videos
@@ -1433,6 +1470,34 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Premium Romantic Privacy Confirmation Popup */}
+      {showPrivacyNotification && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xl animate-digit-fade">
+          <div className="glass-panel w-full max-w-sm rounded-3xl p-6 shadow-2xl border border-white/10 relative flex flex-col text-center items-center">
+            <div className="w-12 h-12 rounded-full bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-300 mb-4 shadow-[0_0_20px_rgba(99,102,241,0.25)]">
+              <Lock className="w-6 h-6" />
+            </div>
+            <h3 className="text-base font-romantic font-bold text-slate-100 tracking-wide mb-2">
+              Saved to Secure Vault!
+            </h3>
+            <p className="text-xs text-indigo-200/80 leading-relaxed mb-6">
+              Your media has been securely copied to the app's isolated private database.
+              <br /><br />
+              <span className="text-rose-300 font-semibold">⚠️ Important Privacy Note:</span> Adding media here <span className="underline">does not</span> automatically delete the original file from your device.
+              <br /><br />
+              To keep these moments completely private and invisible to other apps, please <span className="text-indigo-300 font-semibold">manually delete the original photos/videos</span> from your public Gallery!
+            </p>
+            <button
+              onClick={() => setShowPrivacyNotification(false)}
+              className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-rose-500 to-indigo-600 hover:from-rose-400 hover:to-indigo-500 text-white font-semibold text-xs tracking-wider uppercase shadow-lg shadow-indigo-950/40 active:scale-95 transition-all flex items-center justify-center gap-1.5"
+            >
+              <Heart className="w-3.5 h-3.5 fill-current" />
+              <span>I Understand</span>
+            </button>
           </div>
         </div>
       )}

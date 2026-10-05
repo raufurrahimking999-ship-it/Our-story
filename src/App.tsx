@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Lock, Bell } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { BackgroundAura } from './components/BackgroundAura';
 import { CounterDisplay } from './components/CounterDisplay';
 import { MusicPlayerCard } from './components/MusicPlayerCard';
@@ -9,6 +9,7 @@ import { MemoryVaultGalleryModal } from './components/MemoryVaultGalleryModal';
 import { StartupPermissionModal } from './components/StartupPermissionModal';
 import { notificationService } from './services/notificationService';
 import { localMusicService } from './services/localMusicService';
+import { SplashScreen } from '@capacitor/splash-screen';
 
 export default function App() {
   const [isVaultOpen, setIsVaultOpen] = useState<boolean>(false);
@@ -16,6 +17,10 @@ export default function App() {
   useEffect(() => {
     // Initialize native Android daily anniversary notification scheduling
     notificationService.init();
+    // Safety check: ensure splash screen is hidden
+    try {
+      SplashScreen.hide().catch(() => {});
+    } catch {}
   }, []);
 
   const handlePermissionsCompleted = () => {
@@ -53,28 +58,19 @@ export default function App() {
           
           {/* Subtle Vault Entry: Small Lock Icon & Exact Requested Line */}
           <div className="flex flex-col items-center gap-1.5 pt-2 pb-1">
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => setIsVaultOpen(true)}
-                className="text-indigo-300/50 hover:text-indigo-200 transition-colors p-1"
-                aria-label="Open Vault"
-              >
-                <Lock className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Temporary Test Notification Button */}
-              <button
-                onClick={() => notificationService.triggerImmediateTestNotification()}
-                className="text-indigo-300/50 hover:text-indigo-200 transition-colors p-1"
-                title="Trigger Test Notification"
-                aria-label="Trigger Test Notification"
-              >
-                <Bell className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <p className="text-[11px] sm:text-xs text-indigo-200/60 font-romantic tracking-[0.1em] text-center select-none">
+            <button
+              onClick={() => setIsVaultOpen(true)}
+              className="p-1.5 rounded-full text-indigo-300/50 hover:text-rose-300 hover:bg-white/[0.04] transition-all active:scale-95 group"
+              aria-label="Open Vault"
+            >
+              <Lock className="w-3.5 h-3.5 transition-transform group-hover:scale-110 drop-shadow-[0_0_8px_rgba(165,180,252,0.3)]" />
+            </button>
+            <button
+              onClick={() => setIsVaultOpen(true)}
+              className="text-[11px] sm:text-xs text-indigo-200/60 hover:text-indigo-100 font-romantic tracking-[0.1em] text-center select-none transition-colors"
+            >
               A little place for the moments that mean the most.
-            </p>
+            </button>
           </div>
         </div>
       </main>

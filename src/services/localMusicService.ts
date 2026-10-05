@@ -1,5 +1,4 @@
-import { Capacitor } from '@capacitor/core';
-import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { DEFAULT_LOCAL_AUDIO_PATH, RELATIONSHIP_CONFIG } from '../config';
 
 export interface SongItem {
@@ -37,66 +36,19 @@ class LocalMusicService {
   }
 
   /**
-   * Scan device storage directories for audio files using Filesystem API
+   * Scan device storage directories for audio files using native Android MediaStore API
    */
   public async requestPermissionAndScan(): Promise<SongItem[]> {
     try {
       const isNative = Capacitor.isNativePlatform();
 
       if (isNative) {
-        // Try reading common music directories on Android
-        const scannedSongs: SongItem[] = [];
-        const audioExtensions = ['.mp3', '.m4a', '.wav', '.flac', '.aac', '.ogg'];
+        console.log('Initiating native Android MediaStore scan...');
+        const NativeAudio = registerPlugin<any>('NativeAudio');
+        const scanResult = await NativeAudio.scanDeviceAudio();
 
-        const searchDirectories = [
-          Directory.Documents,
-          Directory.ExternalStorage,
-        ];
-
-        for (const dir of searchDirectories) {
-          try {
-            const dirResult = await Filesystem.readdir({
-              path: '',
-              directory: dir,
-            });
-
-            if (dirResult && dirResult.files) {
-              for (const fileObj of dirResult.files) {
-                const fileName = typeof fileObj === 'string' ? fileObj : fileObj.name;
-                const lowerName = fileName.toLowerCase();
-
-                if (audioExtensions.some(ext => lowerName.endsWith(ext))) {
-                  try {
-                    const getUriRes = await Filesystem.getUri({
-                      directory: dir,
-                      path: fileName,
-                    });
-
-                    const webPath = Capacitor.convertFileSrc(getUriRes.uri);
-                    const cleanTitle = fileName.replace(/\.[^/.]+$/, '');
-
-                    scannedSongs.push({
-                      id: `scanned-${dir}-${fileName}`,
-                      title: cleanTitle,
-                      artist: 'Local Device Music',
-                      album: 'Storage Track',
-                      duration: 180,
-                      url: webPath,
-                      isBuiltIn: false,
-                    });
-                  } catch (e) {
-                    console.warn('Error reading file URI:', e);
-                  }
-                }
-              }
-            }
-          } catch (e) {
-            console.warn(`Could not read directory ${dir}:`, e);
-          }
-        }
-
-        if (scannedSongs.length > 0) {
-          // Merge scanned songs with built-in song and user imported songs
+        if (scanResult && scanResult.songs && scanResult.songs.length > 0) {
+          const scannedSongs: SongItem[] = scanResult.songs;
           const customSaved = this.getSavedCustomSongs();
           const combined = [BUILTIN_SONG, ...customSaved];
 
@@ -108,11 +60,14 @@ class LocalMusicService {
 
           this.songs = combined;
           this.notify();
+          console.log(`Native scan loaded ${scannedSongs.length} songs.`);
           return this.songs;
+        } else {
+          console.log('No songs returned from native MediaStore scan.');
         }
       }
     } catch (e) {
-      console.warn('Error scanning native music library:', e);
+      console.error('Error scanning native MediaStore library:', e);
     }
 
     // Fallback: Return built-in song + saved imported songs

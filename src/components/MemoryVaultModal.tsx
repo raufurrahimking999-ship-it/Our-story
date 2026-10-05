@@ -226,30 +226,34 @@ export const MemoryVaultModal: React.FC<MemoryVaultModalProps> = ({ isOpen, onCl
     }
   };
 
-  const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    Array.from(files).forEach((file) => {
+    for (const file of Array.from(files)) {
       const isVideo = file.type.startsWith('video');
       const isImage = file.type.startsWith('image');
-      if (!isVideo && !isImage) return;
+      if (!isVideo && !isImage) continue;
 
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const dataUrl = event.target?.result as string;
-        if (dataUrl) {
-          vaultService.addVaultItem({
-            type: isVideo ? 'video' : 'image',
-            dataUrl,
-            name: file.name,
-            size: file.size,
-          });
-          setItems(vaultService.getVaultItems());
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+      await new Promise<void>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          const dataUrl = event.target?.result as string;
+          if (dataUrl) {
+            await vaultService.addVaultItem({
+              type: isVideo ? 'video' : 'image',
+              dataUrl,
+              name: file.name,
+              size: file.size,
+            });
+            setItems(vaultService.getVaultItems());
+          }
+          resolve();
+        };
+        reader.onerror = () => resolve();
+        reader.readAsDataURL(file);
+      });
+    }
 
     if (fileInputRef.current) {
       fileInputRef.current.value = '';

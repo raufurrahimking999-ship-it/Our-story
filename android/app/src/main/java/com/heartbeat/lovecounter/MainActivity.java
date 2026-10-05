@@ -32,6 +32,7 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
         registerPlugin(PermissionBridgePlugin.class);
         registerPlugin(NativeAudioPlugin.class);
+        registerPlugin(VaultStoragePlugin.class);
         
         // Enable seamless transparent status bar & edge-to-edge immersive background display
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
@@ -67,29 +68,31 @@ public class MainActivity extends BridgeActivity {
 )
 class PermissionBridgePlugin extends Plugin {
 
+    private String getRequiredAudioPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return Manifest.permission.READ_MEDIA_AUDIO;
+        } else {
+            return Manifest.permission.READ_EXTERNAL_STORAGE;
+        }
+    }
+
     @PluginMethod
     public void checkAudioPermission(PluginCall call) {
         JSObject ret = new JSObject();
-        String status = "prompt";
-        android.app.Activity activity = getActivity();
+        String permission = getRequiredAudioPermission();
         
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            int result = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.READ_MEDIA_AUDIO);
-            if (result == PackageManager.PERMISSION_GRANTED) {
-                status = "granted";
-            } else if (activity != null && ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.READ_MEDIA_AUDIO)) {
-                status = "prompt";
-            } else {
-                status = "denied";
-            }
+        // Directly check OS permission status (failsafe)
+        int result = ContextCompat.checkSelfPermission(getContext(), permission);
+        
+        String status = "prompt";
+        if (result == PackageManager.PERMISSION_GRANTED) {
+            status = "granted";
         } else {
-            int result = ContextCompat.checkSelfPermission(getContext(), Manifest.permission.READ_EXTERNAL_STORAGE);
-            if (result == PackageManager.PERMISSION_GRANTED) {
-                status = "granted";
-            } else if (activity != null && ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.READ_EXTERNAL_STORAGE)) {
+            android.app.Activity activity = getActivity();
+            if (activity != null && ActivityCompat.shouldShowRequestPermissionRationale(activity, permission)) {
                 status = "prompt";
             } else {
-                status = "denied";
+                status = "prompt"; // Default to prompt to allow requesting natively
             }
         }
         
@@ -99,6 +102,16 @@ class PermissionBridgePlugin extends Plugin {
 
     @PluginMethod
     public void requestAudioPermission(PluginCall call) {
+        String permission = getRequiredAudioPermission();
+        
+        // If already granted, resolve immediately
+        if (ContextCompat.checkSelfPermission(getContext(), permission) == PackageManager.PERMISSION_GRANTED) {
+            JSObject ret = new JSObject();
+            ret.put("granted", true);
+            call.resolve(ret);
+            return;
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissionForAlias("audio33", call, "audioCallback");
         } else {
@@ -109,13 +122,10 @@ class PermissionBridgePlugin extends Plugin {
     @PermissionCallback
     private void audioCallback(PluginCall call) {
         JSObject ret = new JSObject();
-        boolean granted = false;
+        String permission = getRequiredAudioPermission();
         
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            granted = getPermissionState("audio33") == com.getcapacitor.PermissionState.GRANTED;
-        } else {
-            granted = getPermissionState("audioLegacy") == com.getcapacitor.PermissionState.GRANTED;
-        }
+        // Always query the real Android OS directly to bypass any out-of-sync Capacitor states
+        boolean granted = ContextCompat.checkSelfPermission(getContext(), permission) == PackageManager.PERMISSION_GRANTED;
         
         ret.put("granted", granted);
         call.resolve(ret);
@@ -177,10 +187,12 @@ class NativeAudioPlugin extends Plugin {
                     return;
                 }
 
-                // Resolve URLs (supports both __capacitor_file_ and relative assets URLs)
+                // Resolve URLs (supports both __capacitor_file_, content://, file:// and relative assets URLs)
                 String resolvedUrl = url;
                 if (url.startsWith("__capacitor_file_:///")) {
                     resolvedUrl = "file://" + url.substring("__capacitor_file_:///".length() - 1);
+                } else if (url.startsWith("content://") || url.startsWith("file://") || url.startsWith("http://") || url.startsWith("https://")) {
+                    resolvedUrl = url;
                 } else if (url.startsWith("/") || !url.startsWith("http")) {
                     String cleanPath = url;
                     if (cleanPath.startsWith("/")) {
@@ -311,5 +323,80 @@ class NativeAudioPlugin extends Plugin {
             NativeAudioPlayerManager.release();
             call.resolve();
         });
+    }
+
+    @PluginMethod
+    public void scanDeviceAudio(PluginCall call) {
+        Context context = getContext();
+        JSObject ret = new JSObject();
+        com.getcapacitor.JSArray songList = new com.getcapacitor.JSArray();
+
+        String permission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU 
+            ? Manifest.permission.READ_MEDIA_AUDIO 
+            : Manifest.permission.READ_EXTERNAL_STORAGE;
+            
+        if (ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED) {
+            android.util.Log.w("NativeAudio", "Cannot scan device audio: permission not granted.");
+            ret.put("songs", songList);
+            call.resolve(ret);
+            return;
+        }
+
+        android.content.ContentResolver resolver = context.getContentResolver();
+        android.net.Uri uri = android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+        
+        String[] projection = {
+            android.provider.MediaStore.Audio.Media._ID,
+            android.provider.MediaStore.Audio.Media.TITLE,
+            android.provider.MediaStore.Audio.Media.ARTIST,
+            android.provider.MediaStore.Audio.Media.ALBUM,
+            android.provider.MediaStore.Audio.Media.DURATION
+        };
+
+        String selection = android.provider.MediaStore.Audio.Media.IS_MUSIC + " != 0";
+        android.database.Cursor cursor = null;
+
+        try {
+            cursor = resolver.query(uri, projection, selection, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                int idCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media._ID);
+                int titleCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.TITLE);
+                int artistCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.ARTIST);
+                int albumCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.ALBUM);
+                int durationCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.DURATION);
+
+                do {
+                    long id = cursor.getLong(idCol);
+                    String title = cursor.getString(titleCol);
+                    String artist = cursor.getString(artistCol);
+                    String album = cursor.getString(albumCol);
+                    long durationMs = cursor.getLong(durationCol);
+
+                    android.net.Uri contentUri = android.content.ContentUris.withAppendedId(
+                        android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, 
+                        id
+                    );
+
+                    JSObject songObj = new JSObject();
+                    songObj.put("id", "native-" + id);
+                    songObj.put("title", title != null ? title : "Unknown Title");
+                    songObj.put("artist", artist != null && !artist.equals("<unknown>") ? artist : "Device Audio");
+                    songObj.put("album", album != null && !album.equals("<unknown>") ? album : "Local Album");
+                    songObj.put("duration", durationMs > 0 ? (durationMs / 1000.0) : 180.0);
+                    songObj.put("url", contentUri.toString());
+
+                    songList.put(songObj);
+                } while (cursor.moveToNext());
+            }
+        } catch (Exception e) {
+            android.util.Log.e("NativeAudio", "Error querying MediaStore: " + e.getMessage(), e);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        ret.put("songs", songList);
+        call.resolve(ret);
     }
 }

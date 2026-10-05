@@ -34,6 +34,11 @@
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
 
+        <!-- Default Notification Icon for System Notifications -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_heart" />
+
         <!-- Media3 Background Playback Foreground Service -->
         <service
             android:name=".AudioPlaybackService"

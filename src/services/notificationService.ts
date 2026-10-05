@@ -247,9 +247,9 @@ class NotificationService {
               allowWhileIdle: true,
             },
             channelId: 'daily_anniversary_channel_v5',
-            smallIcon: 'icon',
+            smallIcon: 'ic_stat_heart',
             largeIcon: 'icon', // Beautiful Launcher Icon as a Large Badge
-            iconColor: '#a78bfa', // Bright colorful violet-lavender accent color
+            iconColor: '#e11d48', // Vibrant romantic ruby/rose heart accent color
             autoCancel: true,
             extra: {
               dayCount: targetDayCount,
@@ -338,66 +338,6 @@ class NotificationService {
           tag: `anniversary-day-${currentCompletedDays}`,
         });
       } catch {}
-    }
-  }
-
-  /**
-   * Immediately triggers a single test notification matching the style, channels,
-   * templates, and icons of the existing notifications for direct debugging on APK/Web.
-   */
-  public async triggerImmediateTestNotification(): Promise<void> {
-    try {
-      const now = Date.now();
-      const startMs = RELATIONSHIP_CONFIG.startTimestamp;
-      const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-      const currentCompletedDays = Math.floor(Math.max(0, now - startMs) / ONE_DAY_MS) || 1;
-
-      const title = ROMANTIC_TITLES[currentCompletedDays % ROMANTIC_TITLES.length];
-      const body = ROMANTIC_MESSAGES_POOL[Math.floor(Math.random() * ROMANTIC_MESSAGES_POOL.length)];
-
-      if (Capacitor.isNativePlatform()) {
-        const permStatus = await LocalNotifications.checkPermissions();
-        if (permStatus.display !== 'granted') {
-          await LocalNotifications.requestPermissions();
-        }
-
-        await LocalNotifications.schedule({
-          notifications: [
-            {
-              id: 99999,
-              title: `${title} (Test)`,
-              body,
-              schedule: { at: new Date(Date.now() + 500) }, // Trigger in 500ms
-              channelId: 'daily_anniversary_channel_v5',
-              smallIcon: 'icon',
-              largeIcon: 'icon',
-              iconColor: '#a78bfa',
-              autoCancel: true,
-              extra: {
-                dayCount: currentCompletedDays,
-                milestoneTime: now,
-                isTest: true,
-              },
-            }
-          ]
-        });
-      } else {
-        if (typeof window !== 'undefined' && 'Notification' in window) {
-          if (Notification.permission !== 'granted') {
-            await Notification.requestPermission();
-          }
-          if (Notification.permission === 'granted') {
-            new Notification(`${title} (Test)`, {
-              body,
-              icon: '/icon-192.png',
-              badge: '/favicon.png',
-              tag: `test-anniversary-${now}`,
-            });
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to trigger immediate test notification:', e);
     }
   }
 }

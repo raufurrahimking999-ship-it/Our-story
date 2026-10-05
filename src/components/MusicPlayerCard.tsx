@@ -315,13 +315,13 @@ export const MusicPlayerCard: React.FC = () => {
     <div className="w-full max-w-md px-2 relative">
       {/* 
         =========================================================================
-        1. EXISTING MAIN AUDIO PLAYER CARD (Elegant Glassmorphism Theme)
+        1. EXISTING MAIN AUDIO PLAYER CARD (Elegant Liquid-Glassmorphism Theme)
         =========================================================================
       */}
-      <div className="bg-gradient-to-b from-[#0e1428] to-[#080c18] border border-indigo-500/15 shadow-[0_16px_44px_rgba(3,4,10,0.85)] rounded-2xl p-3.5 sm:p-4 transition-all duration-300 relative overflow-hidden">
+      <div className="glass-panel rounded-3xl p-4 sm:p-4.5 transition-all duration-300 relative overflow-hidden">
         {/* Subtle Ambient Backlight Glow inside Card while playing */}
         <div
-          className={`absolute -top-12 -right-12 w-28 h-28 rounded-full bg-gradient-to-tr from-indigo-500/15 via-violet-600/10 to-indigo-400/10 blur-xl transition-opacity duration-1000 pointer-events-none ${
+          className={`absolute -top-10 -right-10 w-32 h-32 rounded-full bg-gradient-to-tr from-indigo-500/20 via-violet-500/15 to-rose-500/15 blur-2xl transition-opacity duration-1000 pointer-events-none ${
             isPlaying ? 'opacity-100 animate-pulse-glow' : 'opacity-0'
           }`}
         />
@@ -330,11 +330,11 @@ export const MusicPlayerCard: React.FC = () => {
         <div className="flex items-center justify-between gap-2 relative z-10">
           {/* Left: Disc icon & Song meta */}
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            {/* Compact Spinning Disc Icon */}
+            {/* Compact Spinning Disc Icon with Heart Detail */}
             <div
-              className={`relative w-8 h-8 rounded-full bg-slate-900/70 border border-white/[0.12] flex items-center justify-center shrink-0 shadow-inner transition-all duration-700 ${
+              className={`relative w-8.5 h-8.5 sm:w-9 sm:h-9 rounded-full bg-slate-950/80 border border-white/[0.14] flex items-center justify-center shrink-0 shadow-inner transition-all duration-700 ${
                 isPlaying
-                  ? 'ring-1.5 ring-indigo-400/60 shadow-[0_0_14px_rgba(129,140,248,0.35)] animate-disc-glow'
+                  ? 'ring-1.5 ring-indigo-400/70 shadow-[0_0_16px_rgba(165,180,252,0.40)] animate-disc-glow'
                   : 'ring-1 ring-white/[0.08] shadow-none'
               }`}
             >
@@ -359,7 +359,7 @@ export const MusicPlayerCard: React.FC = () => {
                 </button>
               </div>
               <div className="flex items-center gap-2 text-[10px] text-slate-400">
-                <span>{songs.length} songs available</span>
+                <span className="text-indigo-200/50">{songs.length} songs available</span>
                 {isLoading && <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-300" />}
               </div>
             </div>
@@ -377,19 +377,19 @@ export const MusicPlayerCard: React.FC = () => {
               <SkipBack className="w-3.5 h-3.5" />
             </button>
 
-            {/* Play/Pause Button */}
+            {/* Luxurious Circular Play/Pause Button */}
             <button
               onClick={togglePlay}
               disabled={isLoading}
-              className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-gradient-to-b from-indigo-500/30 to-violet-600/30 hover:from-indigo-500/40 hover:to-violet-600/40 border border-indigo-400/40 flex items-center justify-center text-white shadow-[0_0_12px_rgba(99,102,241,0.25)] active:scale-95 transition-all duration-150"
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-indigo-500/35 via-violet-500/30 to-rose-500/25 hover:from-indigo-500/45 hover:to-rose-500/35 border border-indigo-300/35 flex items-center justify-center text-white shadow-[0_0_16px_rgba(129,140,248,0.30)] active:scale-95 transition-all duration-200"
               aria-label={isPlaying ? 'Pause song' : 'Play song'}
             >
               {isLoading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                <Loader2 className="w-4 h-4 animate-spin text-white" />
               ) : isPlaying ? (
-                <Pause className="w-3.5 h-3.5 fill-current text-slate-100" />
+                <Pause className="w-4 h-4 fill-current text-slate-100" />
               ) : (
-                <Play className="w-3.5 h-3.5 fill-current text-slate-100 ml-0.5" />
+                <Play className="w-4 h-4 fill-current text-slate-100 ml-0.5" />
               )}
             </button>
 
@@ -406,7 +406,7 @@ export const MusicPlayerCard: React.FC = () => {
             {/* Dedicated Song List Trigger */}
             <button
               onClick={handleOpenLibrary}
-              className="p-1.5 rounded-lg text-indigo-300 hover:text-indigo-200 transition-colors active:scale-95 ml-0.5"
+              className="p-1.5 rounded-xl text-indigo-300/80 hover:text-indigo-200 bg-white/[0.04] border border-white/[0.06] transition-colors active:scale-95 ml-0.5"
               title="Open full-screen Song List"
               aria-label="Open full-screen Song List"
             >
