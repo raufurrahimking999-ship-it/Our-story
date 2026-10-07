@@ -1,16 +1,27 @@
 package com.heartbeat.lovecounter;
 
 import android.Manifest;
+import android.content.ContentResolver;
+import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
+import android.provider.MediaStore;
 import android.provider.Settings;
-import androidx.core.content.ContextCompat;
-import android.content.pm.PackageManager;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
+
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.view.WindowCompat;
 
+import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -19,34 +30,32 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
-import com.getcapacitor.BridgeActivity;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
-import androidx.media3.common.MediaItem;
-import androidx.media3.common.MediaMetadata;
-import androidx.media3.common.Player;
-import androidx.media3.exoplayer.ExoPlayer;
+import java.util.ArrayList;
+import java.util.List;
 
 public class MainActivity extends BridgeActivity {
     @Override
-    public void onCreate(android.os.Bundle savedInstanceState) {
+    public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         registerPlugin(PermissionBridgePlugin.class);
         registerPlugin(NativeAudioPlugin.class);
-        registerPlugin(VaultStoragePlugin.class);
-        
-        // Enable seamless transparent status bar & edge-to-edge immersive background display
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-            android.view.Window window = getWindow();
-            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
-            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+
+        // Seamless transparent status bar & edge-to-edge immersive display
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            Window window = getWindow();
+            window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+            window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
             window.setStatusBarColor(android.graphics.Color.TRANSPARENT);
-            
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 WindowCompat.setDecorFitsSystemWindows(window, false);
             } else {
                 window.getDecorView().setSystemUiVisibility(
-                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
-                    android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                 );
             }
         }
@@ -80,10 +89,8 @@ class PermissionBridgePlugin extends Plugin {
     public void checkAudioPermission(PluginCall call) {
         JSObject ret = new JSObject();
         String permission = getRequiredAudioPermission();
-        
-        // Directly check OS permission status (failsafe)
         int result = ContextCompat.checkSelfPermission(getContext(), permission);
-        
+
         String status = "prompt";
         if (result == PackageManager.PERMISSION_GRANTED) {
             status = "granted";
@@ -92,10 +99,10 @@ class PermissionBridgePlugin extends Plugin {
             if (activity != null && ActivityCompat.shouldShowRequestPermissionRationale(activity, permission)) {
                 status = "prompt";
             } else {
-                status = "prompt"; // Default to prompt to allow requesting natively
+                status = "prompt";
             }
         }
-        
+
         ret.put("status", status);
         call.resolve(ret);
     }
@@ -103,8 +110,6 @@ class PermissionBridgePlugin extends Plugin {
     @PluginMethod
     public void requestAudioPermission(PluginCall call) {
         String permission = getRequiredAudioPermission();
-        
-        // If already granted, resolve immediately
         if (ContextCompat.checkSelfPermission(getContext(), permission) == PackageManager.PERMISSION_GRANTED) {
             JSObject ret = new JSObject();
             ret.put("granted", true);
@@ -123,10 +128,7 @@ class PermissionBridgePlugin extends Plugin {
     private void audioCallback(PluginCall call) {
         JSObject ret = new JSObject();
         String permission = getRequiredAudioPermission();
-        
-        // Always query the real Android OS directly to bypass any out-of-sync Capacitor states
         boolean granted = ContextCompat.checkSelfPermission(getContext(), permission) == PackageManager.PERMISSION_GRANTED;
-        
         ret.put("granted", granted);
         call.resolve(ret);
     }
@@ -150,191 +152,92 @@ class PermissionBridgePlugin extends Plugin {
 
 @CapacitorPlugin(name = "NativeAudio")
 class NativeAudioPlugin extends Plugin {
-    private String currentUrl = "";
-    private String currentTitle = "";
-    private String currentArtist = "";
 
-    @PluginMethod
-    public void playSong(PluginCall call) {
-        String url = call.getString("url");
-        String title = call.getString("title", "Our Special Song");
-        String artist = call.getString("artist", "Our Little Story");
+    @Override
+    public void load() {
+        super.load();
 
-        if (url == null || url.isEmpty()) {
-            call.reject("URL is required");
-            return;
-        }
+        // Listen for track changes & playback state changes from native ExoPlayer/MediaSession
+        NativeAudioPlayerManager.setEventListener(new NativeAudioPlayerManager.PlaybackEventListener() {
+            @Override
+            public void onPlaybackStateChanged(boolean isPlaying, int playbackState) {
+                notifyListeners("onStateChange", getStateObject());
+            }
 
-        currentUrl = url;
-        currentTitle = title;
-        currentArtist = artist;
-
-        getBridge().getActivity().runOnUiThread(() -> {
-            try {
-                Context context = getContext();
-                
-                // Start background Media3 foreground service
-                Intent serviceIntent = new Intent(context, AudioPlaybackService.class);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent);
-                } else {
-                    context.startService(serviceIntent);
+            @Override
+            public void onTrackChanged(NativeAudioPlayerManager.SongInfo song, int index) {
+                JSObject data = new JSObject();
+                data.put("index", index);
+                if (song != null) {
+                    data.put("id", song.id);
+                    data.put("title", song.title);
+                    data.put("artist", song.artist);
+                    data.put("album", song.album);
+                    data.put("duration", song.duration);
+                    data.put("url", song.url);
+                    data.put("artwork", song.artwork);
                 }
+                notifyListeners("onTrackChange", data);
+                notifyListeners("onStateChange", getStateObject());
+            }
 
-                ExoPlayer player = NativeAudioPlayerManager.getPlayer(context);
-                if (player == null) {
-                    call.reject("Could not initialize ExoPlayer");
-                    return;
-                }
-
-                // Resolve URLs (supports both __capacitor_file_, content://, file:// and relative assets URLs)
-                String resolvedUrl = url;
-                if (url.startsWith("__capacitor_file_:///")) {
-                    resolvedUrl = "file://" + url.substring("__capacitor_file_:///".length() - 1);
-                } else if (url.startsWith("content://") || url.startsWith("file://") || url.startsWith("http://") || url.startsWith("https://")) {
-                    resolvedUrl = url;
-                } else if (url.startsWith("/") || !url.startsWith("http")) {
-                    String cleanPath = url;
-                    if (cleanPath.startsWith("/")) {
-                        cleanPath = cleanPath.substring(1);
-                    }
-                    resolvedUrl = "asset:///public/" + cleanPath;
-                }
-
-                // Setup Media Metadata for Notification Shade & Lockscreen
-                MediaMetadata metadata = new MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setArtist(artist)
-                    .build();
-
-                MediaItem mediaItem = new MediaItem.Builder()
-                    .setUri(resolvedUrl)
-                    .setMediaMetadata(metadata)
-                    .build();
-
-                player.setMediaItem(mediaItem);
-                player.prepare();
-                player.setPlayWhenReady(true);
-
-                JSObject ret = new JSObject();
-                ret.put("success", true);
-                call.resolve(ret);
-            } catch (Exception e) {
-                call.reject("Error in native playback", e);
+            @Override
+            public void onPositionDiscontinuity() {
+                notifyListeners("onStateChange", getStateObject());
             }
         });
     }
 
-    @PluginMethod
-    public void pause(PluginCall call) {
-        getBridge().getActivity().runOnUiThread(() -> {
-            ExoPlayer player = NativeAudioPlayerManager.getPlayer(getContext());
-            if (player != null) {
-                player.setPlayWhenReady(false);
-            }
-            call.resolve();
-        });
-    }
-
-    @PluginMethod
-    public void resume(PluginCall call) {
-        getBridge().getActivity().runOnUiThread(() -> {
-            ExoPlayer player = NativeAudioPlayerManager.getPlayer(getContext());
-            if (player != null) {
-                player.setPlayWhenReady(true);
-            }
-            call.resolve();
-        });
-    }
-
-    @PluginMethod
-    public void seek(PluginCall call) {
-        Double seconds = call.getDouble("seconds");
-        if (seconds == null) {
-            call.reject("seconds is required");
-            return;
+    private void ensureServiceStarted() {
+        try {
+            Context context = getContext();
+            Intent serviceIntent = new Intent(context, AudioPlaybackService.class);
+            context.startService(serviceIntent);
+        } catch (Exception e) {
+            android.util.Log.w("NativeAudio", "Could not start service directly: " + e.getMessage());
         }
-
-        getBridge().getActivity().runOnUiThread(() -> {
-            ExoPlayer player = NativeAudioPlayerManager.getPlayer(getContext());
-            if (player != null) {
-                player.seekTo((long) (seconds * 1000));
-            }
-            call.resolve();
-        });
     }
 
-    @PluginMethod
-    public void setVolume(PluginCall call) {
-        Double volume = call.getDouble("volume");
-        if (volume == null) {
-            call.reject("volume is required");
-            return;
+    private JSObject getStateObject() {
+        JSObject ret = new JSObject();
+        NativeAudioPlayerManager.SongInfo current = NativeAudioPlayerManager.getCurrentSong();
+
+        ret.put("isPlaying", NativeAudioPlayerManager.isPlaying());
+        ret.put("currentTime", NativeAudioPlayerManager.getCurrentPositionSec());
+        ret.put("duration", NativeAudioPlayerManager.getDurationSec());
+        ret.put("currentIndex", NativeAudioPlayerManager.getCurrentIndex());
+
+        int rep = NativeAudioPlayerManager.getRepeatMode();
+        String repStr = rep == 2 ? "one" : (rep == 1 ? "all" : "off");
+        ret.put("repeatMode", repStr);
+        ret.put("isShuffle", NativeAudioPlayerManager.isShuffle());
+
+        if (current != null) {
+            ret.put("url", current.url);
+            ret.put("title", current.title);
+            ret.put("artist", current.artist);
+            ret.put("album", current.album);
+            ret.put("artwork", current.artwork);
+        } else {
+            ret.put("url", "");
+            ret.put("title", "");
+            ret.put("artist", "");
+            ret.put("album", "");
+            ret.put("artwork", "");
         }
-
-        getBridge().getActivity().runOnUiThread(() -> {
-            ExoPlayer player = NativeAudioPlayerManager.getPlayer(getContext());
-            if (player != null) {
-                player.setVolume(volume.floatValue());
-            }
-            call.resolve();
-        });
-    }
-
-    @PluginMethod
-    public void getState(PluginCall call) {
-        getBridge().getActivity().runOnUiThread(() -> {
-            ExoPlayer player = NativeAudioPlayerManager.getPlayer(getContext());
-            JSObject ret = new JSObject();
-            if (player == null) {
-                ret.put("isPlaying", false);
-                ret.put("currentTime", 0);
-                ret.put("duration", 0);
-                ret.put("url", "");
-                ret.put("title", "");
-                ret.put("artist", "");
-                call.resolve(ret);
-                return;
-            }
-
-            ret.put("isPlaying", player.getPlayWhenReady());
-            ret.put("currentTime", player.getCurrentPosition() / 1000.0);
-            
-            double dur = player.getDuration() / 1000.0;
-            if (dur < 0) {
-                dur = 0;
-            }
-            ret.put("duration", dur);
-            ret.put("url", currentUrl);
-            ret.put("title", currentTitle);
-            ret.put("artist", currentArtist);
-            ret.put("isEnded", player.getPlaybackState() == Player.STATE_ENDED);
-            call.resolve(ret);
-        });
-    }
-
-    @PluginMethod
-    public void stopPlayback(PluginCall call) {
-        getBridge().getActivity().runOnUiThread(() -> {
-            ExoPlayer player = NativeAudioPlayerManager.getPlayer(getContext());
-            if (player != null) {
-                player.stop();
-            }
-            NativeAudioPlayerManager.release();
-            call.resolve();
-        });
+        return ret;
     }
 
     @PluginMethod
     public void scanDeviceAudio(PluginCall call) {
         Context context = getContext();
         JSObject ret = new JSObject();
-        com.getcapacitor.JSArray songList = new com.getcapacitor.JSArray();
+        JSArray songList = new JSArray();
 
-        String permission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU 
-            ? Manifest.permission.READ_MEDIA_AUDIO 
+        String permission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+            ? Manifest.permission.READ_MEDIA_AUDIO
             : Manifest.permission.READ_EXTERNAL_STORAGE;
-            
+
         if (ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED) {
             android.util.Log.w("NativeAudio", "Cannot scan device audio: permission not granted.");
             ret.put("songs", songList);
@@ -342,28 +245,43 @@ class NativeAudioPlugin extends Plugin {
             return;
         }
 
-        android.content.ContentResolver resolver = context.getContentResolver();
-        android.net.Uri uri = android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
-        
+        ContentResolver resolver = context.getContentResolver();
+        Uri uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+
         String[] projection = {
-            android.provider.MediaStore.Audio.Media._ID,
-            android.provider.MediaStore.Audio.Media.TITLE,
-            android.provider.MediaStore.Audio.Media.ARTIST,
-            android.provider.MediaStore.Audio.Media.ALBUM,
-            android.provider.MediaStore.Audio.Media.DURATION
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM,
+            MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.DISPLAY_NAME,
+            MediaStore.Audio.Media.ALBUM_ID
         };
 
-        String selection = android.provider.MediaStore.Audio.Media.IS_MUSIC + " != 0";
-        android.database.Cursor cursor = null;
+        // Query all music/audio tracks that are at least 5 seconds long (filtering out brief sound alerts)
+        String selection = "(" + MediaStore.Audio.Media.IS_MUSIC + " != 0 " +
+            " OR " + MediaStore.Audio.Media.MIME_TYPE + " LIKE 'audio/%' " +
+            " OR " + MediaStore.Audio.Media.DISPLAY_NAME + " LIKE '%.mp3' " +
+            " OR " + MediaStore.Audio.Media.DISPLAY_NAME + " LIKE '%.m4a' " +
+            " OR " + MediaStore.Audio.Media.DISPLAY_NAME + " LIKE '%.flac' " +
+            " OR " + MediaStore.Audio.Media.DISPLAY_NAME + " LIKE '%.wav' " +
+            " OR " + MediaStore.Audio.Media.DISPLAY_NAME + " LIKE '%.aac' " +
+            " OR " + MediaStore.Audio.Media.DISPLAY_NAME + " LIKE '%.ogg') " +
+            " AND " + MediaStore.Audio.Media.DURATION + " >= 5000";
+
+        String sortOrder = MediaStore.Audio.Media.TITLE + " COLLATE NOCASE ASC";
+        Cursor cursor = null;
 
         try {
-            cursor = resolver.query(uri, projection, selection, null, null);
+            cursor = resolver.query(uri, projection, selection, null, sortOrder);
             if (cursor != null && cursor.moveToFirst()) {
-                int idCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media._ID);
-                int titleCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.TITLE);
-                int artistCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.ARTIST);
-                int albumCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.ALBUM);
-                int durationCol = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.DURATION);
+                int idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID);
+                int titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE);
+                int artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST);
+                int albumCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM);
+                int durationCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION);
+                int displayNameCol = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME);
+                int albumIdCol = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID);
 
                 do {
                     long id = cursor.getLong(idCol);
@@ -371,19 +289,43 @@ class NativeAudioPlugin extends Plugin {
                     String artist = cursor.getString(artistCol);
                     String album = cursor.getString(albumCol);
                     long durationMs = cursor.getLong(durationCol);
+                    String displayName = displayNameCol != -1 ? cursor.getString(displayNameCol) : null;
+                    long albumId = albumIdCol != -1 ? cursor.getLong(albumIdCol) : -1;
 
-                    android.net.Uri contentUri = android.content.ContentUris.withAppendedId(
-                        android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, 
+                    if (title == null || title.trim().isEmpty() || title.equalsIgnoreCase("<unknown>")) {
+                        if (displayName != null && !displayName.isEmpty()) {
+                            title = displayName.replaceFirst("[.][^.]+$", "");
+                        } else {
+                            title = "Audio Track " + id;
+                        }
+                    }
+
+                    if (artist == null || artist.trim().isEmpty() || artist.equalsIgnoreCase("<unknown>")) {
+                        artist = "Device Audio";
+                    }
+
+                    if (album == null || album.trim().isEmpty() || album.equalsIgnoreCase("<unknown>")) {
+                        album = "Local Music";
+                    }
+
+                    Uri contentUri = ContentUris.withAppendedId(
+                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                         id
                     );
 
+                    String artworkUri = "";
+                    if (albumId > 0) {
+                        artworkUri = "content://media/external/audio/albumart/" + albumId;
+                    }
+
                     JSObject songObj = new JSObject();
-                    songObj.put("id", "native-" + id);
-                    songObj.put("title", title != null ? title : "Unknown Title");
-                    songObj.put("artist", artist != null && !artist.equals("<unknown>") ? artist : "Device Audio");
-                    songObj.put("album", album != null && !album.equals("<unknown>") ? album : "Local Album");
-                    songObj.put("duration", durationMs > 0 ? (durationMs / 1000.0) : 180.0);
+                    songObj.put("id", "device-" + id);
+                    songObj.put("title", title);
+                    songObj.put("artist", artist);
+                    songObj.put("album", album);
+                    songObj.put("duration", durationMs > 0 ? (durationMs / 1000.0) : 0.0);
                     songObj.put("url", contentUri.toString());
+                    songObj.put("artwork", artworkUri);
 
                     songList.put(songObj);
                 } while (cursor.moveToNext());
@@ -398,5 +340,147 @@ class NativeAudioPlugin extends Plugin {
 
         ret.put("songs", songList);
         call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void setPlaylist(PluginCall call) {
+        JSArray songsArray = call.getArray("songs");
+        int initialIndex = call.getInt("initialIndex", 0);
+
+        List<NativeAudioPlayerManager.SongInfo> list = new ArrayList<>();
+        if (songsArray != null) {
+            for (int i = 0; i < songsArray.length(); i++) {
+                try {
+                    JSONObject obj = songsArray.getJSONObject(i);
+                    NativeAudioPlayerManager.SongInfo info = new NativeAudioPlayerManager.SongInfo(
+                        obj.optString("id", ""),
+                        obj.optString("title", "Unknown Title"),
+                        obj.optString("artist", "Device Audio"),
+                        obj.optString("album", "Local Music"),
+                        obj.optDouble("duration", 0.0),
+                        obj.optString("url", ""),
+                        obj.optString("artwork", "")
+                    );
+                    list.add(info);
+                } catch (Exception ignored) {}
+            }
+        }
+
+        NativeAudioPlayerManager.setPlaylist(list, initialIndex);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void playSong(PluginCall call) {
+        ensureServiceStarted();
+
+        Integer index = call.getInt("index");
+        if (index != null && index >= 0) {
+            NativeAudioPlayerManager.playSongAtIndex(index);
+            JSObject ret = new JSObject();
+            ret.put("success", true);
+            call.resolve(ret);
+            return;
+        }
+
+        String url = call.getString("url");
+        String title = call.getString("title", "Unknown Title");
+        String artist = call.getString("artist", "Device Audio");
+        String album = call.getString("album", "Local Music");
+        Double duration = call.getDouble("duration", 0.0);
+        String artwork = call.getString("artwork", "");
+        String id = call.getString("id", "song-" + System.currentTimeMillis());
+
+        if (url == null || url.isEmpty()) {
+            call.reject("URL is required");
+            return;
+        }
+
+        NativeAudioPlayerManager.SongInfo song = new NativeAudioPlayerManager.SongInfo(
+            id, title, artist, album, duration, url, artwork
+        );
+        NativeAudioPlayerManager.playSong(song);
+
+        JSObject ret = new JSObject();
+        ret.put("success", true);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void pause(PluginCall call) {
+        NativeAudioPlayerManager.pause();
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void resume(PluginCall call) {
+        ensureServiceStarted();
+        NativeAudioPlayerManager.resume();
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void seek(PluginCall call) {
+        Double seconds = call.getDouble("seconds");
+        if (seconds == null) {
+            call.reject("seconds is required");
+            return;
+        }
+        NativeAudioPlayerManager.seekTo((long) (seconds * 1000));
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void next(PluginCall call) {
+        ensureServiceStarted();
+        NativeAudioPlayerManager.playNext();
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void previous(PluginCall call) {
+        ensureServiceStarted();
+        NativeAudioPlayerManager.playPrevious();
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setRepeatMode(PluginCall call) {
+        String mode = call.getString("mode", "all");
+        int rep = 1;
+        if ("one".equalsIgnoreCase(mode)) {
+            rep = 2;
+        } else if ("off".equalsIgnoreCase(mode)) {
+            rep = 0;
+        }
+        NativeAudioPlayerManager.setRepeatMode(rep);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setShuffle(PluginCall call) {
+        Boolean shuffle = call.getBoolean("shuffle", false);
+        NativeAudioPlayerManager.setShuffle(shuffle != null && shuffle);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setVolume(PluginCall call) {
+        Double volume = call.getDouble("volume");
+        if (volume != null) {
+            NativeAudioPlayerManager.setVolume(volume.floatValue());
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void getState(PluginCall call) {
+        call.resolve(getStateObject());
+    }
+
+    @PluginMethod
+    public void stopPlayback(PluginCall call) {
+        NativeAudioPlayerManager.release();
+        call.resolve();
     }
 }

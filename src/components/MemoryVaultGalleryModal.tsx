@@ -2,10 +2,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Lock, KeyRound, Plus, Trash2, Video, Image as ImageIcon, X, Eye, EyeOff, 
   AlertCircle, Download, Upload, Settings, HelpCircle, Folder, FolderPlus, Search, 
-  ArrowLeft, CheckSquare, Square, Play, ArrowRight, Edit3, FolderInput, Copy, Heart
+  ArrowLeft, CheckSquare, Square, Play, ArrowRight, Edit3, FolderInput, Copy, Heart, ShieldAlert, Loader2
 } from 'lucide-react';
 import { vaultService, VaultItem, VaultFolder } from '../services/vaultService';
-import { vaultStorageNative } from '../services/vaultStorageNative';
 
 interface MemoryVaultGalleryModalProps {
   isOpen: boolean;
@@ -52,6 +51,11 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
 
   // Full-screen Media Viewer State
   const [viewerItemIndex, setViewerItemIndex] = useState<number | null>(null);
+  const [fullMediaUrl, setFullMediaUrl] = useState<string | null>(null);
+
+  // Uploading / Encryption Progress State
+  const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
 
   // Settings Form States
   const [oldPassInput, setOldPassInput] = useState<string>('');
@@ -83,22 +87,24 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
     return () => unsubscribe();
   }, [isOpen]);
 
-  // Handle Android system Back button / gesture
+  // Decrypt full media for high resolution full-screen viewer
   useEffect(() => {
-    if (!isOpen) return;
-
-    const handlePopState = (e: PopStateEvent) => {
-      e.preventDefault();
-      handleBackNavigation();
-    };
-
-    window.history.pushState({ vaultOpen: true }, '');
-    window.addEventListener('popstate', handlePopState);
-
-    return () => {
-      window.removeEventListener('popstate', handlePopState);
-    };
-  }, [isOpen, isUnlocked, activeFolderId, viewerItemIndex, isSelectMode, gallerySubView, modalAction, showSearch]);
+    if (viewerItemIndex !== null && items[viewerItemIndex]) {
+      const currentItem = items[viewerItemIndex];
+      let isCancelled = false;
+      vaultService.getDecryptedFullMediaUrl(currentItem.id).then((url) => {
+        if (!isCancelled && url) {
+          setFullMediaUrl(url);
+        }
+      });
+      return () => {
+        isCancelled = true;
+        setFullMediaUrl(null);
+      };
+    } else {
+      setFullMediaUrl(null);
+    }
+  }, [viewerItemIndex, items]);
 
   const handleBackNavigation = () => {
     if (!isUnlocked) {
@@ -139,8 +145,9 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
     const exists = await vaultService.hasPassword();
     setHasPass(exists);
     setAuthView(exists ? 'unlock' : 'create');
-    setIsUnlocked(vaultService.getUnlockedStatus());
-    if (vaultService.getUnlockedStatus()) {
+    const unlocked = vaultService.getUnlockedStatus();
+    setIsUnlocked(unlocked);
+    if (unlocked) {
       refreshData();
     }
   };
@@ -178,7 +185,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
       setIsUnlocked(true);
       refreshData();
     } else {
-      setErrorMsg('Failed to create password.');
+      setErrorMsg('Failed to create secure password.');
     }
   };
 
@@ -248,7 +255,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
   };
 
   // =========================================================================
-  // GALLERY ACTIONS & FILTERING
+  // GALLERY ACTIONS & IMPORT FLOW
   // =========================================================================
   const filteredItems = items.filter(item => {
     if (activeFolderId === 'root') {
@@ -263,99 +270,42 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
     return true;
   }).sort((a, b) => b.dateAdded - a.dateAdded);
 
-  const [isUploading, setIsUploading] = useState<boolean>(false);
-
-  useEffect(() => {
-    const handleFocus = () => {
-      vaultService.setFilePicking(false);
-    };
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
-  }, []);
-
-  const handleAddMediaClick = async () => {
-    vaultService.setFilePicking(true);
-    if (vaultStorageNative.isNative()) {
-      setIsUploading(true);
-      setErrorMsg('');
-      try {
-        const picked = await vaultStorageNative.pickAndImportMedia(false);
-        if (picked && picked.length > 0) {
-          for (const item of picked) {
-            await vaultService.addVaultItem({
-              folderId: activeFolderId === 'root' ? undefined : activeFolderId || undefined,
-              type: item.type,
-              dataUrl: item.webUrl,
-              name: item.name,
-              size: item.size,
-              privatePath: item.filePath,
-            });
-          }
-          refreshData();
-          setShowPrivacyNotification(true);
-          return;
-        }
-      } catch (err: any) {
-        console.warn('Native picker cancelled or failed, falling back to file input:', err);
-      } finally {
-        setIsUploading(false);
-        setTimeout(() => vaultService.setFilePicking(false), 500);
-      }
-    }
+  const handleAddMediaClick = () => {
     fileInputRef.current?.click();
   };
 
   const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) {
-      vaultService.setFilePicking(false);
       return;
     }
 
     setIsUploading(true);
     setErrorMsg('');
+    const fileList = Array.from(files);
+    setUploadProgress({ current: 0, total: fileList.length });
 
     try {
-      const fileList = Array.from(files);
-      for (const file of fileList) {
-        const isVideo = file.type.startsWith('video');
-        const isImage = file.type.startsWith('image');
-        const fileType: 'image' | 'video' | 'file' = isVideo ? 'video' : isImage ? 'image' : 'file';
-
-        await new Promise<void>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = async (event) => {
-            const dataUrl = event.target?.result as string;
-            if (dataUrl) {
-              const success = await vaultService.addVaultItem({
-                folderId: activeFolderId === 'root' ? undefined : activeFolderId || undefined,
-                type: fileType,
-                dataUrl,
-                name: file.name,
-                size: file.size,
-              });
-              if (!success) {
-                setErrorMsg('Could not save file. Storage may be full.');
-              }
-              resolve();
-            } else {
-              reject(new Error('Failed to read file content'));
-            }
-          };
-          reader.onerror = () => reject(new Error('File reading error'));
-          reader.readAsDataURL(file);
-        });
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        setUploadProgress({ current: i + 1, total: fileList.length });
+        const success = await vaultService.addVaultFile(
+          file,
+          file.name,
+          activeFolderId === 'root' ? undefined : activeFolderId || undefined
+        );
+        if (!success) {
+          setErrorMsg('Failed to securely encrypt & save ' + file.name);
+        }
       }
       refreshData();
       setShowPrivacyNotification(true);
     } catch (err: any) {
-      console.error('File import error:', err);
-      setErrorMsg(err.message || 'Error uploading file.');
+      console.error('File encryption & import error:', err);
+      setErrorMsg(err.message || 'Error securing and uploading media.');
     } finally {
       setIsUploading(false);
-      setTimeout(() => {
-        vaultService.setFilePicking(false);
-      }, 500);
+      setUploadProgress(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
@@ -372,11 +322,11 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
       isLongPressActiveRef.current = true;
       setIsSelectMode(true);
       setSelectedItemIds((prev) => prev.includes(itemId) ? prev : [...prev, itemId]);
-    }, 400); // 400ms hold triggers selection mode
+    }, 400);
   };
 
   const handleItemMouseDown = (e: React.MouseEvent, itemId: string) => {
-    if (isTouchDeviceRef.current) return; // Prevent duplicate triggers on touch screens
+    if (isTouchDeviceRef.current) return;
     isLongPressActiveRef.current = false;
     if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
 
@@ -439,7 +389,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
       refreshData();
       if (viewerItemIndex !== null) setViewerItemIndex(null);
     } else {
-      setErrorMsg('Failed to delete selected media from storage.');
+      setErrorMsg('Failed to delete selected media from encrypted storage.');
     }
   };
 
@@ -496,7 +446,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
 
   if (!isOpen) return null;
 
-  const storedQ = vaultService.getRecoveryQuestion() || 'What is your special date or memorable keyword?';
+  const storedQ = vaultService.getRecoveryQuestion() || 'What is our special date or memorable keyword?';
   const isSettingsView = gallerySubView === 'settings';
   const currentFolder = folders.find(f => f.id === activeFolderId);
 
@@ -540,7 +490,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
               <div>
                 <h3 className="text-sm font-medium text-slate-100">Set Gallery Password</h3>
                 <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
-                  Create a password to keep your gallery private.
+                  Create a password to keep your gallery encrypted and private.
                 </p>
                 <p className="text-[11px] text-indigo-200/70 font-romantic tracking-[0.1em] mt-2 select-none flex items-center gap-1">
                   <span>Built on memories, held by trust.</span>
@@ -716,9 +666,8 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*,video/*,application/*,text/*"
+        accept="image/*,video/*"
         multiple
-        onClick={() => vaultService.setFilePicking(true)}
         onChange={handleFileImport}
         className="hidden"
       />
@@ -729,18 +678,13 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
       {/* Top Navbar */}
       <header className="min-h-[3.5rem] pt-safe pb-2 px-4 sm:px-6 bg-[#060b19]/80 backdrop-blur-xl border-b border-white/10 flex items-center justify-between shrink-0 z-20">
         <div className="flex items-center gap-3">
-          {(activeFolderId !== null || isSettingsView) ? (
-            <button
-              onClick={() => {
-                if (isSettingsView) setGallerySubView('grid');
-                else setActiveFolderId(null);
-              }}
-              className="p-2 rounded-xl text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
-              title="Back"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-          ) : null}
+          <button
+            onClick={handleBackNavigation}
+            className="p-2 rounded-xl text-slate-300 hover:text-white hover:bg-white/5 transition-colors"
+            title="Back"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
 
           <div className="flex items-center gap-2">
             <h1 className="text-sm font-semibold tracking-wide text-slate-100 flex items-center gap-1.5">
@@ -825,10 +769,10 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                 onClick={handleAddMediaClick}
                 disabled={isUploading}
                 className="p-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-500 transition-colors shadow-[0_0_15px_rgba(99,102,241,0.3)] disabled:opacity-50"
-                title="Add Photos, Videos or Files"
+                title="Add Photos or Videos"
               >
                 {isUploading ? (
-                  <span className="inline-block w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <Loader2 className="w-4 h-4 animate-spin text-white" />
                 ) : (
                   <Plus className="w-4 h-4" />
                 )}
@@ -875,6 +819,19 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
         </div>
       </header>
 
+      {/* Encryption & Processing Notification Banner */}
+      {isUploading && (
+        <div className="bg-indigo-600/90 backdrop-blur-md px-4 py-2.5 text-xs text-white flex items-center justify-between border-b border-indigo-400/30 shadow-lg animate-pulse z-20">
+          <div className="flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="font-medium">
+              Encrypting & securing media... {uploadProgress ? `(${uploadProgress.current}/${uploadProgress.total})` : ''}
+            </span>
+          </div>
+          <span className="text-[10px] text-indigo-200">AES-256-GCM</span>
+        </div>
+      )}
+
       {/* Optional Search Bar */}
       {showSearch && !isSettingsView && (
         <div className="px-4 py-2 bg-slate-900/90 border-b border-white/10">
@@ -912,7 +869,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
               if (success) {
                 setOldPassInput('');
                 setNewPassInput('');
-                setErrorMsg('Password updated.');
+                setErrorMsg('Password updated successfully.');
               } else {
                 setErrorMsg('Incorrect current password.');
               }
@@ -997,13 +954,9 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                   ref={restoreFileInputRef}
                   type="file"
                   accept=".enc,.json"
-                  onClick={() => vaultService.setFilePicking(true)}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
-                    if (!file) {
-                      vaultService.setFilePicking(false);
-                      return;
-                    }
+                    if (!file) return;
                     const reader = new FileReader();
                     reader.onload = (event) => {
                       const content = event.target?.result as string;
@@ -1011,7 +964,6 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                         setRestoreFileContent(content);
                         setErrorMsg('Backup loaded. Enter password below to confirm.');
                       }
-                      setTimeout(() => vaultService.setFilePicking(false), 500);
                     };
                     reader.readAsText(file);
                   }}
@@ -1037,7 +989,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                           setGallerySubView('grid');
                           refreshData();
                         } else {
-                          setErrorMsg('Restore failed: Invalid password or file.');
+                          setErrorMsg('Restore failed: Invalid password or corrupted file.');
                         }
                       }}
                       className="w-full py-2 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl"
@@ -1119,6 +1071,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
                 <p className="text-xs text-slate-400">Our little moments, kept forever.</p>
                 <button
                   onClick={handleAddMediaClick}
+                  disabled={isUploading}
                   className="px-4 py-2 text-xs font-medium text-white bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 rounded-xl shadow-[0_0_15px_rgba(99,102,241,0.25)] mt-2"
                 >
                   Add Photos / Videos
@@ -1221,14 +1174,15 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
           <div className="relative flex-1 w-full max-w-4xl flex items-center justify-center overflow-hidden my-auto" onClick={(e) => e.stopPropagation()}>
             {items[viewerItemIndex].type === 'video' ? (
               <video
-                src={items[viewerItemIndex].dataUrl}
+                src={fullMediaUrl || items[viewerItemIndex].dataUrl}
                 controls
                 autoPlay
+                playsInline
                 className="max-h-[80vh] max-w-full rounded-2xl shadow-2xl border border-white/10 object-contain"
               />
             ) : (
               <img
-                src={items[viewerItemIndex].dataUrl}
+                src={fullMediaUrl || items[viewerItemIndex].dataUrl}
                 alt={items[viewerItemIndex].name}
                 className="max-h-[80vh] max-w-full rounded-2xl shadow-2xl border border-white/10 object-contain select-none"
               />
@@ -1485,7 +1439,7 @@ export const MemoryVaultGalleryModal: React.FC<MemoryVaultGalleryModalProps> = (
               Saved to Secure Vault!
             </h3>
             <p className="text-xs text-indigo-200/80 leading-relaxed mb-6">
-              Your media has been securely copied to the app's isolated private database.
+              Your media has been securely encrypted with AES-256-GCM and stored in private sandboxed database storage.
               <br /><br />
               <span className="text-rose-300 font-semibold">⚠️ Important Privacy Note:</span> Adding media here <span className="underline">does not</span> automatically delete the original file from your device.
               <br /><br />

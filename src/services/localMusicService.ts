@@ -1,5 +1,4 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { DEFAULT_LOCAL_AUDIO_PATH, RELATIONSHIP_CONFIG } from '../config';
 
 export interface SongItem {
   id: string;
@@ -9,102 +8,92 @@ export interface SongItem {
   duration: number;
   url: string;
   artwork?: string;
-  isBuiltIn?: boolean;
 }
 
-export const BUILTIN_SONG: SongItem = {
-  id: 'builtin-our-song',
-  title: 'Our Special Song',
-  artist: RELATIONSHIP_CONFIG.coupleSignature,
-  album: 'Our Little Story',
-  duration: 291,
-  url: DEFAULT_LOCAL_AUDIO_PATH,
-  isBuiltIn: true,
-};
+const STORAGE_CACHE_KEY = 'our_story_device_audio_cache';
 
-export const FALLBACK_LOCAL_SONGS: SongItem[] = [
-  BUILTIN_SONG,
-];
+interface NativeAudioPlugin {
+  scanDeviceAudio(): Promise<{ songs: SongItem[] }>;
+  setPlaylist(options: { songs: SongItem[]; initialIndex?: number }): Promise<void>;
+}
+
+const NativeAudio = registerPlugin<NativeAudioPlugin>('NativeAudio');
 
 class LocalMusicService {
-  private songs: SongItem[] = [...FALLBACK_LOCAL_SONGS];
+  private songs: SongItem[] = [];
   private subscribers = new Set<(songs: SongItem[]) => void>();
+  private isScanning = false;
 
   constructor() {
-    this.songs = [...FALLBACK_LOCAL_SONGS];
-    this.loadCustomSavedSongs();
+    this.songs = this.loadCachedSongs();
+  }
+
+  private loadCachedSongs(): SongItem[] {
+    try {
+      if (typeof window !== 'undefined') {
+        const raw = localStorage.getItem(STORAGE_CACHE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return parsed;
+          }
+        }
+      }
+    } catch {}
+    return [];
+  }
+
+  private saveCachedSongs(list: SongItem[]) {
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(STORAGE_CACHE_KEY, JSON.stringify(list));
+      }
+    } catch {}
   }
 
   /**
-   * Scan device storage directories for audio files using native Android MediaStore API
+   * Automatically scan device audio/music files from Android MediaStore
    */
   public async requestPermissionAndScan(): Promise<SongItem[]> {
+    if (this.isScanning) {
+      return this.songs;
+    }
+
+    this.isScanning = true;
     try {
-      const isNative = Capacitor.isNativePlatform();
-
-      if (isNative) {
-        console.log('Initiating native Android MediaStore scan...');
-        const NativeAudio = registerPlugin<any>('NativeAudio');
+      if (Capacitor.isNativePlatform()) {
         const scanResult = await NativeAudio.scanDeviceAudio();
+        if (scanResult && Array.isArray(scanResult.songs)) {
+          this.songs = scanResult.songs;
+          this.saveCachedSongs(this.songs);
+          this.notify();
 
-        if (scanResult && scanResult.songs && scanResult.songs.length > 0) {
-          const scannedSongs: SongItem[] = scanResult.songs;
-          const customSaved = this.getSavedCustomSongs();
-          const combined = [BUILTIN_SONG, ...customSaved];
-
-          for (const s of scannedSongs) {
-            if (!combined.some(existing => existing.id === s.id || existing.url === s.url)) {
-              combined.push(s);
-            }
+          // Sync full playlist to Android native player manager
+          try {
+            await NativeAudio.setPlaylist({ songs: this.songs });
+          } catch (e) {
+            console.warn('Error setting playlist on native audio:', e);
           }
 
-          this.songs = combined;
-          this.notify();
-          console.log(`Native scan loaded ${scannedSongs.length} songs.`);
           return this.songs;
-        } else {
-          console.log('No songs returned from native MediaStore scan.');
         }
       }
     } catch (e) {
-      console.error('Error scanning native MediaStore library:', e);
+      console.warn('Error querying native device audio:', e);
+    } finally {
+      this.isScanning = false;
     }
 
-    // Fallback: Return built-in song + saved imported songs
-    const customSaved = this.getSavedCustomSongs();
-    this.songs = [BUILTIN_SONG, ...customSaved];
+    // Return cached songs if scan failed or in non-native environment
     this.notify();
     return this.songs;
-  }
-
-  /**
-   * Import a local song file selected by the user
-   */
-  public async addCustomSongFile(file: File): Promise<SongItem> {
-    const objectUrl = URL.createObjectURL(file);
-    const cleanTitle = file.name.replace(/\.[^/.]+$/, '');
-
-    const newSong: SongItem = {
-      id: `imported-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-      title: cleanTitle,
-      artist: 'Local Music',
-      album: 'Imported Track',
-      duration: 180,
-      url: objectUrl,
-      isBuiltIn: false,
-    };
-
-    this.songs = [...this.songs, newSong];
-    this.saveCustomSongMeta(newSong);
-    this.notify();
-    return newSong;
   }
 
   public getSongs(): SongItem[] {
     return this.songs;
   }
 
-  public subscribe(callback: (songs: SongItem[]) => void) {
+  public subscribe(callback: (songs: SongItem[]) => void): () => void {
     this.subscribers.add(callback);
     callback(this.songs);
     return () => {
@@ -112,32 +101,13 @@ class LocalMusicService {
     };
   }
 
-  private saveCustomSongMeta(song: SongItem) {
-    try {
-      const saved = this.getSavedCustomSongs();
-      saved.push(song);
-      localStorage.setItem('our_story_imported_songs', JSON.stringify(saved));
-    } catch {}
-  }
-
-  private getSavedCustomSongs(): SongItem[] {
-    try {
-      const raw = localStorage.getItem('our_story_imported_songs');
-      if (raw) return JSON.parse(raw);
-    } catch {}
-    return [];
-  }
-
-  private loadCustomSavedSongs() {
-    const saved = this.getSavedCustomSongs();
-    if (saved.length > 0) {
-      this.songs = [BUILTIN_SONG, ...saved];
-    }
-  }
-
   private notify() {
     for (const cb of this.subscribers) {
-      cb(this.songs);
+      try {
+        cb(this.songs);
+      } catch (e) {
+        console.error('Error notifying localMusicService subscriber:', e);
+      }
     }
   }
 }

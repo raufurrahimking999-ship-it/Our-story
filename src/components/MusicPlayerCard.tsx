@@ -5,12 +5,12 @@ import {
   Music2, SkipBack, SkipForward, ListMusic, ArrowLeft, Search, AlertCircle, Loader2, Heart, ShieldAlert, Sparkles 
 } from 'lucide-react';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
-import { audioPlayer, RepeatMode } from '../services/audioPlayerService';
+import { audioPlayer } from '../services/audioPlayerService';
 import { localMusicService, SongItem } from '../services/localMusicService';
 import { permissionService } from '../services/permissionService';
 
 function formatAudioTime(seconds: number): string {
-  if (isNaN(seconds) || seconds < 0 || !Number.isFinite(seconds)) return '00:00';
+  if (isNaN(seconds) || seconds <= 0 || !Number.isFinite(seconds)) return '00:00';
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
@@ -21,8 +21,12 @@ export const MusicPlayerCard: React.FC = () => {
     state,
     togglePlay,
     seek,
+    next,
+    previous,
     toggleMute,
-    setSong,
+    toggleShuffle,
+    cycleRepeatMode,
+    playSongItem,
   } = useAudioPlayer();
 
   const {
@@ -32,13 +36,13 @@ export const MusicPlayerCard: React.FC = () => {
     hasError,
     isMuted,
     repeatMode,
+    isShuffle,
     songName,
     songUrl,
   } = state;
 
   // Local music library & state
-  const [songs, setSongs] = useState<SongItem[]>([]);
-  const [isShuffle, setIsShuffle] = useState<boolean>(false);
+  const [songs, setSongs] = useState<SongItem[]>(() => localMusicService.getSongs());
   const [isLibraryOpen, setIsLibraryOpen] = useState<boolean>(false); // Full-screen State
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [hasAudioPermission, setHasPermission] = useState<boolean | null>(null);
@@ -53,7 +57,7 @@ export const MusicPlayerCard: React.FC = () => {
     }
   });
 
-  // Sync track callbacks with audioPlayerService for Android locks/next track
+  // Sync track callbacks with audioPlayerService for Android notification/lock-screen next/previous
   useEffect(() => {
     audioPlayer.setTrackCallbacks({
       onEnded: () => handlePlayNext(),
@@ -133,7 +137,7 @@ export const MusicPlayerCard: React.FC = () => {
   };
 
   // Find current song index in playlist
-  const currentSongIndex = songs.findIndex((s) => s.url === songUrl || songName.includes(s.title));
+  const currentSongIndex = songs.findIndex((s) => s.url === songUrl || (songName && songName.includes(s.title)));
 
   const handlePlayNext = () => {
     if (songs.length === 0) return;
@@ -145,7 +149,7 @@ export const MusicPlayerCard: React.FC = () => {
       }
       const nextSong = songs[randomIdx];
       if (nextSong) {
-        setSong(nextSong.url, `${nextSong.title} — ${nextSong.artist}`);
+        playSongItem(nextSong, songs);
       }
       return;
     }
@@ -153,7 +157,9 @@ export const MusicPlayerCard: React.FC = () => {
     const nextIdx = currentSongIndex >= 0 ? (currentSongIndex + 1) % songs.length : 0;
     const nextSong = songs[nextIdx];
     if (nextSong) {
-      setSong(nextSong.url, `${nextSong.title} — ${nextSong.artist}`);
+      playSongItem(nextSong, songs);
+    } else {
+      next();
     }
   };
 
@@ -171,7 +177,7 @@ export const MusicPlayerCard: React.FC = () => {
       let randomIdx = Math.floor(Math.random() * songs.length);
       const prevSong = songs[randomIdx];
       if (prevSong) {
-        setSong(prevSong.url, `${prevSong.title} — ${prevSong.artist}`);
+        playSongItem(prevSong, songs);
       }
       return;
     }
@@ -179,12 +185,22 @@ export const MusicPlayerCard: React.FC = () => {
     const prevIdx = currentSongIndex > 0 ? currentSongIndex - 1 : songs.length - 1;
     const prevSong = songs[prevIdx];
     if (prevSong) {
-      setSong(prevSong.url, `${prevSong.title} — ${prevSong.artist}`);
+      playSongItem(prevSong, songs);
+    } else {
+      previous();
     }
   };
 
+  const handleTogglePlay = () => {
+    if (!songUrl && songs.length > 0) {
+      playSongItem(songs[0], songs);
+      return;
+    }
+    togglePlay();
+  };
+
   const handleCycleRepeat = () => {
-    audioPlayer.cycleRepeatMode();
+    cycleRepeatMode();
   };
 
   const toggleFavorite = (songId: string, e?: React.MouseEvent) => {
@@ -215,12 +231,12 @@ export const MusicPlayerCard: React.FC = () => {
   const isDraggingRef = useRef<boolean>(false);
   const dragTimeRef = useRef<number>(0);
 
-  const validDuration = Number.isFinite(duration) && duration > 0 ? duration : 291.0;
+  const validDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
 
   const updateProgressDOM = (currentSec: number, totalDur: number) => {
-    const validDur = totalDur > 0 ? totalDur : 291.0;
-    const clampedSec = Math.max(0, Math.min(currentSec, validDur));
-    const percent = Math.min(100, Math.max(0, (clampedSec / validDur) * 100));
+    const validDur = totalDur > 0 ? totalDur : 0;
+    const clampedSec = validDur > 0 ? Math.max(0, Math.min(currentSec, validDur)) : 0;
+    const percent = validDur > 0 ? Math.min(100, Math.max(0, (clampedSec / validDur) * 100)) : 0;
 
     // Update Main Card DOM elements if visible
     if (progressFillRef.current) progressFillRef.current.style.width = `${percent}%`;
@@ -264,7 +280,7 @@ export const MusicPlayerCard: React.FC = () => {
 
   const computeTargetSecondsFromClientX = (clientX: number, isLibDeck = false): number => {
     const container = isLibDeck ? libTrackContainerRef.current : trackContainerRef.current;
-    if (!container) return 0;
+    if (!container || validDuration <= 0) return 0;
     const rect = container.getBoundingClientRect();
     if (rect.width <= 0) return 0;
     const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
@@ -272,6 +288,7 @@ export const MusicPlayerCard: React.FC = () => {
   };
 
   const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>, isLibDeck = false) => {
+    if (validDuration <= 0) return;
     e.preventDefault();
     isDraggingRef.current = true;
     try {
@@ -284,7 +301,7 @@ export const MusicPlayerCard: React.FC = () => {
   };
 
   const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>, isLibDeck = false) => {
-    if (!isDraggingRef.current) return;
+    if (!isDraggingRef.current || validDuration <= 0) return;
     e.preventDefault();
 
     const targetSec = computeTargetSecondsFromClientX(e.clientX, isLibDeck);
@@ -293,7 +310,7 @@ export const MusicPlayerCard: React.FC = () => {
   };
 
   const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>, isLibDeck = false) => {
-    if (!isDraggingRef.current) return;
+    if (!isDraggingRef.current || validDuration <= 0) return;
     e.preventDefault();
     isDraggingRef.current = false;
     try {
@@ -310,6 +327,8 @@ export const MusicPlayerCard: React.FC = () => {
     s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
     s.artist.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const displaySongTitle = songName || (songs.length > 0 ? songs[0].title : 'No track selected');
 
   return (
     <div className="w-full max-w-md px-2 relative">
@@ -355,7 +374,7 @@ export const MusicPlayerCard: React.FC = () => {
                   className="text-xs sm:text-sm font-medium text-slate-100 truncate tracking-wide leading-tight text-left hover:text-indigo-200 transition-colors"
                   title="Open Dedicated Song List"
                 >
-                  {songName}
+                  {displaySongTitle}
                 </button>
               </div>
               <div className="flex items-center gap-2 text-[10px] text-slate-400">
@@ -379,7 +398,7 @@ export const MusicPlayerCard: React.FC = () => {
 
             {/* Luxurious Circular Play/Pause Button */}
             <button
-              onClick={togglePlay}
+              onClick={handleTogglePlay}
               disabled={isLoading}
               className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-indigo-500/35 via-violet-500/30 to-rose-500/25 hover:from-indigo-500/45 hover:to-rose-500/35 border border-indigo-300/35 flex items-center justify-center text-white shadow-[0_0_16px_rgba(129,140,248,0.30)] active:scale-95 transition-all duration-200"
               aria-label={isPlaying ? 'Pause song' : 'Play song'}
@@ -457,7 +476,7 @@ export const MusicPlayerCard: React.FC = () => {
             <div className="flex items-center gap-3">
               {/* Shuffle button */}
               <button
-                onClick={() => setIsShuffle(!isShuffle)}
+                onClick={toggleShuffle}
                 className={`p-1 rounded-full focus:outline-none transition-colors active:scale-95 ${
                   isShuffle ? 'text-indigo-300 drop-shadow-[0_0_6px_rgba(129,140,248,0.65)]' : 'text-slate-500 hover:text-slate-300'
                 }`}
@@ -546,7 +565,7 @@ export const MusicPlayerCard: React.FC = () => {
                 <span>Song List</span>
                 <Heart className="w-3.5 h-3.5 text-rose-500 fill-rose-500/20" />
               </h1>
-              <p className="text-[10px] text-indigo-300/60 font-semibold tracking-wider mt-0.5">Premium Romantic Collection</p>
+              <p className="text-[10px] text-indigo-300/60 font-semibold tracking-wider mt-0.5">Device Music Collection</p>
             </div>
 
             {/* Empty balance item for perfect alignment */}
@@ -597,17 +616,17 @@ export const MusicPlayerCard: React.FC = () => {
                   {filteredSongs.length === 0 ? (
                     <div className="py-20 text-center text-xs text-slate-400 space-y-3">
                       <Music2 className="w-12 h-12 mx-auto text-slate-700" />
-                      <p className="text-slate-500 font-medium">No matching songs found in your library.</p>
+                      <p className="text-slate-500 font-medium">No matching songs found on your device.</p>
                     </div>
                   ) : (
                     filteredSongs.map((song, idx) => {
-                      const isCurrent = song.url === songUrl || songName.includes(song.title);
+                      const isCurrent = song.url === songUrl || (songName && songName.includes(song.title));
                       const isFav = favorites.includes(song.id);
                       return (
                         <div
                           key={song.id || idx}
                           onClick={() => {
-                            setSong(song.url, `${song.title} — ${song.artist}`);
+                            playSongItem(song, songs);
                           }}
                           className={`flex items-center justify-between p-3.5 sm:p-4 rounded-xl cursor-pointer transition-all ${
                             isCurrent
@@ -734,7 +753,7 @@ export const MusicPlayerCard: React.FC = () => {
               <div className="flex items-center gap-3 min-w-0 flex-1">
                 <div className="flex flex-col min-w-0">
                   <span className="text-xs sm:text-sm font-bold text-slate-100 truncate tracking-wide">
-                    {songName}
+                    {displaySongTitle}
                   </span>
                   <p className="text-[10px] text-indigo-400 truncate mt-0.5 flex items-center gap-1 font-semibold tracking-wider">
                     <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
@@ -747,7 +766,7 @@ export const MusicPlayerCard: React.FC = () => {
               <div className="flex items-center gap-3.5 shrink-0 select-none">
                 {/* Shuffle Button */}
                 <button
-                  onClick={() => setIsShuffle(!isShuffle)}
+                  onClick={toggleShuffle}
                   className={`p-1.5 rounded-full focus:outline-none transition-colors active:scale-95 ${
                     isShuffle ? 'text-indigo-400 drop-shadow-[0_0_5px_rgba(99,102,241,0.65)]' : 'text-slate-500 hover:text-slate-300'
                   }`}
@@ -767,7 +786,7 @@ export const MusicPlayerCard: React.FC = () => {
 
                 {/* Main Play/Pause Button */}
                 <button
-                  onClick={togglePlay}
+                  onClick={handleTogglePlay}
                   disabled={isLoading}
                   className="w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-indigo-600 hover:bg-indigo-500 flex items-center justify-center text-white shadow-lg active:scale-95 transition-all shrink-0"
                 >

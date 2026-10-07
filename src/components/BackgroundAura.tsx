@@ -3,30 +3,17 @@ import React, { useEffect, useRef } from 'react';
 interface HeartParticle {
   x: number;
   y: number;
-  size: number;
+  size: number; // base scale
   speedY: number;
-  driftX: number;
-  swayFreq: number;
-  swayPhase: number;
-  swayAmp: number;
+  driftX: number; // lateral constant drift
+  swayFreq: number; // lateral wave frequency
+  swayPhase: number; // lateral wave phase
+  swayAmp: number; // lateral wave amplitude
   maxOpacity: number;
   hue: number;
-  rotation: number;
-  scaleVar: number;
-  scalePhase: number;
-  fadeLimitTop: number; // variable altitude where heart begins fading out
-}
-
-interface StardustParticle {
-  x: number;
-  y: number;
-  radius: number;
-  speedY: number;
-  driftX: number;
-  pulseSpeed: number;
-  pulsePhase: number;
-  baseOpacity: number;
-  hue: number;
+  rotation: number; // base slight tilt
+  scaleVar: number; // scale breathing amplitude
+  scalePhase: number; // scale breathing phase
 }
 
 export const BackgroundAura: React.FC = () => {
@@ -35,83 +22,131 @@ export const BackgroundAura: React.FC = () => {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
 
     let animationFrameId: number;
     let isRunning = true;
 
-    // Detect Device Pixel Ratio (DPR) for Native/High-Density Crisp Rendering
-    let dpr = window.devicePixelRatio || 1;
+    // Detect Device Pixel Ratio (clamped to min 2 for razor-sharp Retina/OLED rendering without blur or jagged edges)
+    let dpr = Math.max(window.devicePixelRatio || 1, 2);
     let width = window.innerWidth;
     let height = window.innerHeight;
 
-    const setupCanvasSize = () => {
-      const currentDpr = window.devicePixelRatio || 1;
+    const setupCanvasResolution = () => {
+      if (!canvas) return;
+      dpr = Math.max(window.devicePixelRatio || 1, 2);
       width = window.innerWidth;
       height = window.innerHeight;
-      dpr = currentDpr;
 
-      canvas.width = Math.floor(width * currentDpr);
-      canvas.height = Math.floor(height * currentDpr);
+      // High-Definition Backing Store Size
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
 
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.scale(currentDpr, currentDpr);
+      // Set clean transform matrix and configure high quality vector rendering
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
     };
 
-    setupCanvasSize();
-    window.addEventListener('resize', setupCanvasSize);
+    setupCanvasResolution();
+
+    const handleResize = () => {
+      setupCanvasResolution();
+    };
+    window.addEventListener('resize', handleResize);
 
     // =========================================================================
-    // 1. REFINED FLOATING HEARTS (Varied Scales, Trajectories, & Fades)
+    // PRESERVED ROMANTIC BLUISH HEARTS (High Quality, Symmetrical & Premium)
     // =========================================================================
-    const heartCount = 20;
-    // Elegant palette: midnight-blue, icy lavender, soft violet, whisper of rose
-    const heartHues = [220, 230, 245, 260, 275, 335, 345];
+    const heartCount = 18;
+    // Original romantic bluish & lavender/violet theme
+    const heartHues = [222, 232, 245, 258, 270, 335];
 
-    const createHeart = (initialSpread = false, index = 0): HeartParticle => {
-      // Natural size distribution: smaller distant hearts and occasional larger prominent ones
-      const sizeRatio = Math.random();
-      const size = sizeRatio < 0.6 
-        ? 7.0 + Math.random() * 5.0   // 7px to 12px (subtle background)
-        : 12.0 + Math.random() * 7.5; // 12px to 19.5px (intimate foreground)
+    // Stratified lane tracking to ensure uniform full-width distribution across left, center, right
+    let currentLane = Math.floor(Math.random() * 5);
+    const getDistributedX = (screenWidth: number): number => {
+      const numLanes = 5;
+      const laneWidth = screenWidth / numLanes;
+      const padding = 18;
       
-      const depthFactor = (size - 7.0) / 12.5;
+      const lane = currentLane % numLanes;
+      currentLane = (currentLane + 1 + Math.floor(Math.random() * 2)) % numLanes;
 
-      // Distribute evenly across screen width with jitter to prevent clustering
-      const sectionWidth = width / heartCount;
-      const x = Math.max(16, Math.min(width - 16, index * sectionWidth + (Math.random() - 0.5) * (sectionWidth * 0.9)));
+      const minX = lane * laneWidth + padding;
+      const maxX = (lane + 1) * laneWidth - padding;
+      return minX + Math.random() * Math.max(10, maxX - minX);
+    };
 
-      // Y positioning: staggered across the height initially so screen is populated naturally,
-      // then resetting below bottom once ascending
-      let y: number;
-      if (initialSpread) {
-        y = Math.random() * height;
+    // Five distinct random size categories as specified:
+    // - খুব ছোট (Very small)
+    // - ছোট (Small)
+    // - medium (Medium)
+    // - একটু বড় (Slightly large)
+    // - মাঝে মাঝে বড় (Occasionally large - rare, non-cluttering)
+    const getRandomSize = (): number => {
+      const roll = Math.random();
+      if (roll < 0.28) {
+        // খুব ছোট: 5.5px - 7.5px
+        return 5.5 + Math.random() * 2.0;
+      } else if (roll < 0.62) {
+        // ছোট: 8px - 10.5px
+        return 8.0 + Math.random() * 2.5;
+      } else if (roll < 0.86) {
+        // medium: 11.5px - 14.5px
+        return 11.5 + Math.random() * 3.0;
+      } else if (roll < 0.96) {
+        // একটু বড়: 15.5px - 18px
+        return 15.5 + Math.random() * 2.5;
       } else {
-        y = height + 15 + Math.random() * 60;
+        // মাঝে মাঝে বড়: 19.5px - 23px (occasional, preserves clean uncluttered atmosphere)
+        return 19.5 + Math.random() * 3.5;
+      }
+    };
+
+    const createHeart = (initialSpawnIndex?: number): HeartParticle => {
+      const size = getRandomSize();
+      // Relative size weight (0 for smallest, 1 for largest)
+      const sizeRatio = (size - 5.5) / (23 - 5.5);
+
+      const x = getDistributedX(width);
+
+      // Y positioning:
+      // - Initial mount: staggered below screen bottom so NO hearts start already on-screen,
+      //   and they naturally rise from the bottom one after another in random sequence.
+      // - Respawn during runtime: spawns just below the bottom edge.
+      let y: number;
+      if (typeof initialSpawnIndex === 'number') {
+        // Staggered below screen so they rise gradually from the bottom
+        y = height + 18 + (initialSpawnIndex * (height * 0.9) / heartCount) + Math.random() * 35;
+      } else {
+        // Spawns just below screen bottom
+        y = height + size * 1.6 + Math.random() * 25;
       }
 
-      const speedY = 0.22 + depthFactor * 0.28 + Math.random() * 0.14;
-      const driftX = (Math.random() - 0.5) * 0.16;
+      // Smooth floating speed: varying speeds, smaller float lighter, larger have calm presence
+      const speedY = 0.42 + (1 - sizeRatio * 0.3) * 0.28 + Math.random() * 0.18;
 
-      const swayFreq = 0.0035 + Math.random() * 0.0055;
+      // Subtle lateral drift
+      const driftX = (Math.random() - 0.5) * 0.18;
+
+      // Gentle floating sway curve
+      const swayFreq = 0.005 + Math.random() * 0.005;
       const swayPhase = Math.random() * Math.PI * 2;
-      const swayAmp = 0.12 + Math.random() * 0.26;
+      const swayAmp = 0.22 + Math.random() * 0.32;
 
-      const maxOpacity = 0.09 + depthFactor * 0.22 + Math.random() * 0.06;
+      // Luminous max opacity (0.16 to 0.46)
+      const maxOpacity = 0.18 + sizeRatio * 0.24 + Math.random() * 0.06;
       const hue = heartHues[Math.floor(Math.random() * heartHues.length)];
-      const rotation = (Math.random() - 0.5) * 0.12; // Gentle tilt (+/- 7 deg)
 
-      const scaleVar = 0.03 + Math.random() * 0.04;
+      // Subtle organic tilt (+/- 7 degrees)
+      const rotation = (Math.random() - 0.5) * 0.12;
+
+      // Gentle scale breathing
+      const scaleVar = 0.025 + Math.random() * 0.035;
       const scalePhase = Math.random() * Math.PI * 2;
-
-      // Some hearts softly disappear mid-way up (30%-65% of screen height) to create visual depth
-      const fadeChoice = Math.random();
-      const fadeLimitTop = fadeChoice < 0.25 
-        ? height * (0.35 + Math.random() * 0.20) // disappears midway
-        : height * (0.05 + Math.random() * 0.15); // ascends almost to top
 
       return {
         x,
@@ -127,49 +162,15 @@ export const BackgroundAura: React.FC = () => {
         rotation,
         scaleVar,
         scalePhase,
-        fadeLimitTop,
       };
     };
 
+    // Initialize particles: all starting below screen bottom so initial screen load has no hearts already filled
     const heartParticles: HeartParticle[] = Array.from({ length: heartCount }, (_, i) =>
-      createHeart(true, i)
+      createHeart(i)
     );
 
-    // =========================================================================
-    // 2. ETHEREAL STARDUST PARTICLES (Tiny Glowing Luminous Motes)
-    // =========================================================================
-    const stardustCount = 32;
-    const createStardust = (initialSpread = false): StardustParticle => {
-      const x = Math.random() * width;
-      const y = initialSpread ? Math.random() * height : height + 10 + Math.random() * 40;
-      const radius = 0.8 + Math.random() * 1.4; // delicate tiny motes
-      const speedY = 0.12 + Math.random() * 0.22;
-      const driftX = (Math.random() - 0.5) * 0.10;
-      const pulseSpeed = 0.012 + Math.random() * 0.024;
-      const pulsePhase = Math.random() * Math.PI * 2;
-      const baseOpacity = 0.12 + Math.random() * 0.38;
-      const hue = heartHues[Math.floor(Math.random() * heartHues.length)];
-
-      return {
-        x,
-        y,
-        radius,
-        speedY,
-        driftX,
-        pulseSpeed,
-        pulsePhase,
-        baseOpacity,
-        hue,
-      };
-    };
-
-    const stardustParticles: StardustParticle[] = Array.from({ length: stardustCount }, () =>
-      createStardust(true)
-    );
-
-    // =========================================================================
-    // 3. CANVAS DRAWING ROUTINES
-    // =========================================================================
+    // Draw pristine, razor-sharp vector heart preserving original design, shape, and romantic bluish gradient
     const drawSoftHeart = (
       x: number,
       y: number,
@@ -178,39 +179,39 @@ export const BackgroundAura: React.FC = () => {
       hue: number,
       rotation: number
     ) => {
-      if (opacity <= 0.002) return;
+      if (opacity <= 0.002 || size <= 0) return;
 
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(rotation);
 
-      // Subtle atmospheric outer glow
-      ctx.shadowBlur = size * 1.4;
-      ctx.shadowColor = `hsla(${hue}, 85%, 75%, ${opacity * 0.65})`;
+      // Subtle, clean romantic bluish outer aura
+      ctx.shadowBlur = Math.round(size * 0.85);
+      ctx.shadowColor = `hsla(${hue}, 95%, 75%, ${opacity * 0.65})`;
 
-      // Translucent liquid gradient fill
-      const gradient = ctx.createLinearGradient(0, -size * 0.55, 0, size * 0.7);
-      gradient.addColorStop(0, `hsla(${hue}, 92%, 92%, ${opacity * 0.88})`);
-      gradient.addColorStop(0.4, `hsla(${hue}, 85%, 82%, ${opacity * 0.72})`);
-      gradient.addColorStop(1, `hsla(${hue}, 78%, 68%, ${opacity * 0.38})`);
+      // Premium glossy linear gradient fill (preserved translucent glass effect)
+      const gradient = ctx.createLinearGradient(0, -size * 0.6, 0, size * 0.7);
+      gradient.addColorStop(0, `hsla(${hue}, 95%, 93%, ${opacity * 0.95})`);
+      gradient.addColorStop(0.35, `hsla(${hue}, 88%, 84%, ${opacity * 0.82})`);
+      gradient.addColorStop(1, `hsla(${hue}, 82%, 72%, ${opacity * 0.45})`);
       ctx.fillStyle = gradient;
 
       ctx.beginPath();
       // Start at top center dip
-      ctx.moveTo(0, -size * 0.32);
+      ctx.moveTo(0, -size * 0.3);
 
       // Left lobe
       ctx.bezierCurveTo(
-        -size * 0.36, -size * 0.74,
-        -size * 0.75, -size * 0.34,
-        -size * 0.75, 0
+        -size * 0.35, -size * 0.75, // Control point 1
+        -size * 0.75, -size * 0.35, // Control point 2
+        -size * 0.75, 0             // End point
       );
 
       // Bottom left curve to tip
       ctx.bezierCurveTo(
-        -size * 0.75, size * 0.35,
-        -size * 0.35, size * 0.75,
-        0, size
+        -size * 0.75, size * 0.35,  // Control point 1
+        -size * 0.35, size * 0.75,  // Control point 2
+        0, size                     // Bottom tip
       );
 
       // Bottom right curve to tip
@@ -222,122 +223,118 @@ export const BackgroundAura: React.FC = () => {
 
       // Right lobe
       ctx.bezierCurveTo(
-        size * 0.75, -size * 0.34,
-        size * 0.36, -size * 0.74,
-        0, -size * 0.32
+        size * 0.75, -size * 0.35,
+        size * 0.35, -size * 0.75,
+        0, -size * 0.3
       );
       ctx.closePath();
       ctx.fill();
 
-      // Delicate hairline stroke highlight
+      // Sharp, clean glowing edge stroke (zero blur on stroke to prevent jagged/blurry edges)
       ctx.shadowBlur = 0;
-      ctx.strokeStyle = `hsla(${hue}, 95%, 90%, ${opacity * 0.65})`;
-      ctx.lineWidth = Math.max(0.6, size * 0.05);
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = `hsla(${hue}, 95%, 92%, ${opacity * 0.85})`;
+      ctx.lineWidth = Math.max(0.75, size * 0.058);
       ctx.stroke();
 
-      // Soft Specular Highlight on left lobe (intimate glass curve)
+      // Soft Specular Highlight: crisp 3D curved glass sheen at top-left lobe
       ctx.beginPath();
       ctx.ellipse(
         -size * 0.22,
         -size * 0.22,
-        size * 0.18,
-        size * 0.07,
+        size * 0.20,
+        size * 0.08,
         -Math.PI / 4,
         0,
         Math.PI * 2
       );
-      ctx.fillStyle = `hsla(${hue}, 100%, 100%, ${opacity * 0.75})`;
+      ctx.fillStyle = `hsla(${hue}, 100%, 100%, ${opacity * 0.85})`;
       ctx.fill();
 
-      ctx.restore();
-    };
-
-    const drawStardust = (p: StardustParticle, tick: number) => {
-      const pulse = Math.sin(tick * p.pulseSpeed + p.pulsePhase);
-      const opacity = p.baseOpacity * (0.65 + 0.35 * pulse);
-      if (opacity <= 0.01) return;
-
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-
-      ctx.shadowBlur = p.radius * 3.5;
-      ctx.shadowColor = `hsla(${p.hue}, 90%, 80%, ${opacity * 0.8})`;
-
-      ctx.fillStyle = `hsla(${p.hue}, 95%, 92%, ${opacity})`;
-      ctx.fill();
       ctx.restore();
     };
 
     let tick = 0;
-    const render = () => {
+    let lastTime = performance.now();
+
+    const render = (currentTime: number) => {
       if (!isRunning) return;
 
-      tick += 1;
+      const elapsed = currentTime - lastTime;
+      lastTime = currentTime;
+
+      // Delta time factor normalized to 60 FPS (16.67ms per frame)
+      // Clamped to avoid large leaps when switching tabs
+      const dt = Math.min(Math.max(elapsed / 16.667, 0.4), 2.0);
+      tick += dt;
+
       ctx.clearRect(0, 0, width, height);
 
-      // 1. Draw Stardust Particles (Background Starry Motes)
-      for (let i = 0; i < stardustParticles.length; i++) {
-        const s = stardustParticles[i];
-        s.y -= s.speedY;
-        s.x += s.driftX;
-
-        if (s.y < -10) {
-          stardustParticles[i] = createStardust(false);
-          continue;
-        }
-
-        if (s.x < -10) s.x = width + 10;
-        else if (s.x > width + 10) s.x = -10;
-
-        drawStardust(s, tick);
-      }
-
-      // 2. Draw Floating Hearts (Foreground Ambient Layer)
+      // Render Elegant Heart Particles (Foreground Layer)
       for (let i = 0; i < heartParticles.length; i++) {
         const p = heartParticles[i];
 
-        p.y -= p.speedY;
+        // Move upward smoothly from bottom
+        p.y -= p.speedY * dt;
 
-        // Smooth wave trajectory
-        const swayValue = Math.sin(tick * p.swayFreq + p.swayPhase);
-        p.x += p.driftX + swayValue * p.swayAmp;
+        // Natural movement: subtle left/right drift + gentle harmonic curve sway
+        const primarySway = Math.sin(tick * p.swayFreq + p.swayPhase);
+        const secondarySway = Math.cos(tick * p.swayFreq * 0.65 + p.swayPhase) * 0.28;
+        p.x += (p.driftX + (primarySway + secondarySway) * p.swayAmp) * dt;
 
-        // Subtle breathing scale variation
-        const currentScale = p.size * (1 + Math.sin(tick * 0.018 + p.scalePhase) * p.scaleVar);
+        // Subtle tilt sway in sync with horizontal movement
+        const currentTilt = p.rotation + primarySway * 0.035;
 
-        // Reset if it passes its custom top fade altitude or screen top
-        if (p.y < -30) {
-          heartParticles[i] = createHeart(false, i);
+        // Gentle scale breathing
+        const currentScale = p.size * (1 + Math.sin(tick * 0.016 + p.scalePhase) * p.scaleVar);
+
+        // Reset when exiting smoothly past top edge
+        if (p.y < -35) {
+          heartParticles[i] = createHeart();
           continue;
         }
 
-        // Screen edge wrapping
+        // Horizontal soft wrapping
         if (p.x < -30) p.x = width + 30;
         else if (p.x > width + 30) p.x = -30;
 
-        // Smooth fade-in at bottom and gentle fade-out at top altitude
+        // =======================================================================
+        // Flow & Fade: Bottom -> Middle -> Upper screen -> Top -> Fade out
+        // - Clearly visible when rising from bottom
+        // - Softly alive in middle screen
+        // - Gradually fades as it reaches upper screen, disappearing near top
+        // =======================================================================
         let opacityFactor = 1.0;
-        const bottomFadeLimit = height * 0.90;
 
-        if (p.y > bottomFadeLimit) {
-          opacityFactor = Math.max(0, (height - p.y) / (height - bottomFadeLimit));
-        } else if (p.y < p.fadeLimitTop) {
-          opacityFactor = Math.max(0, p.y / p.fadeLimitTop);
+        if (p.y > height) {
+          // Off-screen at bottom: invisible until entering
+          opacityFactor = 0;
+        } else if (p.y > height - 45) {
+          // Smooth quick entry right at bottom edge to full clarity
+          opacityFactor = Math.max(0, (height - p.y) / 45);
+        } else if (p.y >= height * 0.62) {
+          // Bottom to lower-middle: clearly visible and vibrant
+          opacityFactor = 1.0;
+        } else if (p.y >= height * 0.22) {
+          // Middle to upper screen: gradual gentle fade
+          const fadeRatio = (p.y - height * 0.22) / (height * 0.62 - height * 0.22);
+          opacityFactor = 0.58 + 0.42 * fadeRatio;
+        } else {
+          // Upper screen towards top: smoothly dissolves into thin air
+          const topFade = (p.y + 25) / (height * 0.22 + 25);
+          opacityFactor = Math.max(0, 0.58 * topFade);
         }
 
-        if (p.y > height) opacityFactor = 0;
-
         const currentOpacity = p.maxOpacity * opacityFactor;
-        drawSoftHeart(p.x, p.y, currentScale, currentOpacity, p.hue, p.rotation);
+        drawSoftHeart(p.x, p.y, currentScale, currentOpacity, p.hue, currentTilt);
       }
 
       animationFrameId = requestAnimationFrame(render);
     };
 
-    render();
+    animationFrameId = requestAnimationFrame(render);
 
-    // Respect tab/app visibility to preserve battery and GPU
     const handleVisibilityChange = () => {
       if (document.hidden) {
         isRunning = false;
@@ -345,47 +342,47 @@ export const BackgroundAura: React.FC = () => {
       } else {
         if (!isRunning) {
           isRunning = true;
+          lastTime = performance.now();
           animationFrameId = requestAnimationFrame(render);
         }
       }
     };
-
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       isRunning = false;
-      window.removeEventListener('resize', setupCanvasSize);
+      window.removeEventListener('resize', handleResize);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       cancelAnimationFrame(animationFrameId);
     };
   }, []);
 
   return (
-    <div className="fixed inset-0 w-screen h-screen min-h-[100dvh] pointer-events-none overflow-hidden z-0 bg-[#030611]">
-      {/* Deep Midnight Navy & Indigo Base Gradient */}
+    <div className="fixed inset-0 w-screen h-screen min-h-[100dvh] pointer-events-none overflow-hidden z-0 bg-[#040711]">
+      {/* Deep Navy & Midnight Base Gradient */}
       <div 
-        className="absolute inset-0 w-full h-full bg-gradient-to-b from-[#05091a] via-[#030612] to-[#020308]" 
+        className="absolute inset-0 w-full h-full bg-gradient-to-b from-[#060b19] via-[#040712] to-[#02040a]" 
       />
 
-      {/* Soft Ambient Glow Journeys (Smooth, battery-friendly ambient backlights) */}
+      {/* Dynamic Full-Screen Ambient Light Glow Journeys */}
       <div 
-        className="absolute -top-[12%] -left-[10%] w-[380px] h-[380px] sm:w-[500px] sm:h-[500px] rounded-full bg-indigo-600/12 blur-[120px] sm:blur-[160px] animate-glow-journey-1 pointer-events-none" 
+        className="absolute -top-[10%] -left-[10%] w-[420px] h-[420px] sm:w-[540px] sm:h-[540px] rounded-full bg-indigo-500 blur-[140px] sm:blur-[180px] animate-glow-journey-1" 
       />
       <div 
-        className="absolute top-[38%] -right-[15%] w-[360px] h-[360px] sm:w-[480px] sm:h-[480px] rounded-full bg-violet-600/10 blur-[130px] sm:blur-[170px] animate-glow-journey-2 pointer-events-none" 
+        className="absolute top-[40%] -right-[15%] w-[400px] h-[400px] sm:w-[500px] sm:h-[500px] rounded-full bg-violet-500 blur-[140px] sm:blur-[180px] animate-glow-journey-2" 
       />
       <div 
-        className="absolute bottom-[2%] left-[4%] w-[340px] h-[340px] sm:w-[460px] sm:h-[460px] rounded-full bg-blue-600/10 blur-[120px] sm:blur-[160px] animate-glow-journey-3 pointer-events-none" 
+        className="absolute bottom-[5%] left-[5%] w-[380px] h-[380px] sm:w-[480px] sm:h-[480px] rounded-full bg-blue-600 blur-[130px] sm:blur-[170px] animate-glow-journey-3" 
       />
       <div 
-        className="absolute top-[20%] right-[15%] w-[300px] h-[300px] sm:w-[420px] sm:h-[420px] rounded-full bg-rose-900/10 blur-[130px] sm:blur-[170px] animate-glow-journey-4 pointer-events-none" 
+        className="absolute top-[25%] right-[20%] w-[340px] h-[340px] sm:w-[440px] sm:h-[440px] rounded-full bg-rose-950 blur-[140px] sm:blur-[180px] animate-glow-journey-4" 
       />
 
-      {/* Dynamic Symmetrical Floating Hearts & Stardust Canvas */}
+      {/* Symmetrical Floating Hearts Canvas (Behind all UI cards) */}
       <canvas ref={canvasRef} className="absolute inset-0 block w-full h-full" />
 
-      {/* Subtle Cinematic Vignette for Depth */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(1,3,8,0.72)_100%)] pointer-events-none" />
+      {/* Soft Vignette Overlay */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_35%,rgba(2,4,10,0.65)_100%)] pointer-events-none" />
     </div>
   );
 };

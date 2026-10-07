@@ -1,4 +1,4 @@
-import { vaultStorageNative } from './vaultStorageNative';
+import { VaultCrypto, VaultEnvelope, EncryptedBlobData } from './vaultCrypto';
 
 export interface VaultFolder {
   id: string;
@@ -6,40 +6,47 @@ export interface VaultFolder {
   createdAt: number;
 }
 
+export interface StoredVaultItem {
+  id: string;
+  folderId?: string;
+  type: 'image' | 'video' | 'file';
+  name: string;
+  size: number;
+  mimeType: string;
+  dateAdded: number;
+  encryptedMedia: EncryptedBlobData;
+  encryptedThumbnail?: EncryptedBlobData;
+}
+
 export interface VaultItem {
   id: string;
-  folderId?: string; // undefined or 'root' means All or Root
+  folderId?: string;
   type: 'image' | 'video' | 'file';
-  dataUrl: string;
+  dataUrl: string; // In-memory temporary decrypted Blob Object URL
   name: string;
   dateAdded: number;
   size?: number;
-  privatePath?: string; // Internal private storage path (/data/user/0/.../vault_media/...)
+  mimeType?: string;
 }
 
-const VAULT_PASS_KEY = 'rls_vault_pass_hash_secure';
-const VAULT_ITEMS_KEY = 'rls_vault_secure_items_store';
-const VAULT_FOLDERS_KEY = 'rls_vault_secure_folders_store';
-const VAULT_RECOVERY_Q_KEY = 'rls_vault_recovery_q';
-const VAULT_RECOVERY_A_KEY = 'rls_vault_recovery_a_hash';
-const AUTH_RESET_FLAG = 'rls_vault_auth_reset_v3';
+const VAULT_ENVELOPE_KEY = 'rls_vault_secure_envelope_v4';
+const VAULT_FOLDERS_KEY = 'rls_vault_folders_v4';
 
-// IndexedDB Storage Helpers
-const DB_NAME = 'rls_vault_db_v1';
+const DB_NAME = 'rls_vault_secure_db_v4';
 const DB_VERSION = 1;
-const STORE_NAME = 'vault_items';
+const STORE_ITEMS = 'encrypted_media_items';
 
-function openVaultDB(): Promise<IDBDatabase> {
+function openSecureVaultDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined' || !window.indexedDB) {
-      reject(new Error('IndexedDB not supported'));
+      reject(new Error('IndexedDB is not supported on this platform'));
       return;
     }
     const request = window.indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_ITEMS)) {
+        db.createObjectStore(STORE_ITEMS, { keyPath: 'id' });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -47,14 +54,14 @@ function openVaultDB(): Promise<IDBDatabase> {
   });
 }
 
-async function idbGetAllItems(): Promise<VaultItem[]> {
+async function dbGetAllStoredItems(): Promise<StoredVaultItem[]> {
   try {
-    const db = await openVaultDB();
+    const db = await openSecureVaultDB();
     return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
+      const tx = db.transaction(STORE_ITEMS, 'readonly');
+      const store = tx.objectStore(STORE_ITEMS);
       const req = store.getAll();
-      req.onsuccess = () => resolve(req.result || []);
+      req.onsuccess = () => resolve((req.result as StoredVaultItem[]) || []);
       req.onerror = () => resolve([]);
     });
   } catch {
@@ -62,12 +69,27 @@ async function idbGetAllItems(): Promise<VaultItem[]> {
   }
 }
 
-async function idbSaveItem(item: VaultItem): Promise<boolean> {
+async function dbGetStoredItem(id: string): Promise<StoredVaultItem | null> {
   try {
-    const db = await openVaultDB();
+    const db = await openSecureVaultDB();
     return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
+      const tx = db.transaction(STORE_ITEMS, 'readonly');
+      const store = tx.objectStore(STORE_ITEMS);
+      const req = store.get(id);
+      req.onsuccess = () => resolve((req.result as StoredVaultItem) || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function dbSaveStoredItem(item: StoredVaultItem): Promise<boolean> {
+  try {
+    const db = await openSecureVaultDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_ITEMS, 'readwrite');
+      const store = tx.objectStore(STORE_ITEMS);
       const req = store.put(item);
       req.onsuccess = () => resolve(true);
       req.onerror = () => resolve(false);
@@ -77,12 +99,12 @@ async function idbSaveItem(item: VaultItem): Promise<boolean> {
   }
 }
 
-async function idbDeleteItem(id: string): Promise<boolean> {
+async function dbDeleteStoredItem(id: string): Promise<boolean> {
   try {
-    const db = await openVaultDB();
+    const db = await openSecureVaultDB();
     return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
+      const tx = db.transaction(STORE_ITEMS, 'readwrite');
+      const store = tx.objectStore(STORE_ITEMS);
       const req = store.delete(id);
       req.onsuccess = () => resolve(true);
       req.onerror = () => resolve(false);
@@ -92,13 +114,13 @@ async function idbDeleteItem(id: string): Promise<boolean> {
   }
 }
 
-async function idbDeleteItemsBatch(ids: string[]): Promise<boolean> {
+async function dbDeleteStoredItemsBatch(ids: string[]): Promise<boolean> {
   try {
-    const db = await openVaultDB();
+    const db = await openSecureVaultDB();
     return new Promise((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      ids.forEach(id => store.delete(id));
+      const tx = db.transaction(STORE_ITEMS, 'readwrite');
+      const store = tx.objectStore(STORE_ITEMS);
+      ids.forEach((id) => store.delete(id));
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => resolve(false);
     });
@@ -107,71 +129,74 @@ async function idbDeleteItemsBatch(ids: string[]): Promise<boolean> {
   }
 }
 
-async function hashString(str: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(str + 'rls_salt_secure_2026_v2');
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
 class VaultService {
-  private isUnlocked: boolean = false;
-  private isPickingFile: boolean = false;
+  private isUnlocked = false;
+  private masterKey: CryptoKey | null = null;
   private cachedItems: VaultItem[] = [];
+  private activeObjectUrls = new Set<string>();
   private subscribers = new Set<(unlocked: boolean) => void>();
 
   constructor() {
-    if (typeof document !== 'undefined') {
-      const resetFlag = localStorage.getItem(AUTH_RESET_FLAG);
-      if (!resetFlag) {
-        localStorage.removeItem(VAULT_PASS_KEY);
-        localStorage.removeItem(VAULT_RECOVERY_Q_KEY);
-        localStorage.removeItem(VAULT_RECOVERY_A_KEY);
-        localStorage.setItem(AUTH_RESET_FLAG, 'true');
-      }
-
-      document.addEventListener('visibilitychange', () => {
-        // Crucial fix: Do NOT lock vault if the user is currently selecting a file in system photo picker
-        if (document.hidden && !this.isPickingFile) {
-          this.lockVault();
-        }
-      });
-    }
-  }
-
-  public setFilePicking(active: boolean) {
-    this.isPickingFile = active;
+    // Note: Do NOT lock on visibility change because native media pickers cause document to blur/hide temporarily.
+    // Locking only occurs when the user explicitly locks or closes the session.
   }
 
   public async hasPassword(): Promise<boolean> {
     try {
-      const stored = localStorage.getItem(VAULT_PASS_KEY);
-      return Boolean(stored);
+      const envelope = this.loadEnvelope();
+      return Boolean(envelope && envelope.encryptedMVK);
     } catch {
       return false;
     }
   }
 
-  public getRecoveryQuestion(): string | null {
+  private loadEnvelope(): VaultEnvelope | null {
     try {
-      return localStorage.getItem(VAULT_RECOVERY_Q_KEY);
-    } catch {
-      return null;
+      const raw = localStorage.getItem(VAULT_ENVELOPE_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    return null;
+  }
+
+  private saveEnvelope(envelope: VaultEnvelope) {
+    try {
+      localStorage.setItem(VAULT_ENVELOPE_KEY, JSON.stringify(envelope));
+    } catch {}
+  }
+
+  public getRecoveryQuestion(): string | null {
+    const env = this.loadEnvelope();
+    return env?.recoveryQuestion || 'What is our special date or memorable keyword?';
+  }
+
+  public async createPassword(password: string, recoveryQ?: string, recoveryA?: string): Promise<boolean> {
+    try {
+      const { envelope, masterKey } = await VaultCrypto.createEnvelope(password, recoveryQ, recoveryA);
+      this.saveEnvelope(envelope);
+      this.masterKey = masterKey;
+      this.isUnlocked = true;
+      await this.loadAndDecryptVaultItems();
+      this.notify();
+      return true;
+    } catch (e) {
+      console.error('Error creating vault password:', e);
+      return false;
     }
   }
 
-  public async createPassword(pass: string, recoveryQ: string, recoveryA: string): Promise<boolean> {
+  public async verifyPassword(password: string): Promise<boolean> {
     try {
-      const passHash = await hashString(pass);
-      const answerHash = await hashString(recoveryA.trim().toLowerCase());
-      
-      localStorage.setItem(VAULT_PASS_KEY, passHash);
-      localStorage.setItem(VAULT_RECOVERY_Q_KEY, recoveryQ.trim());
-      localStorage.setItem(VAULT_RECOVERY_A_KEY, answerHash);
+      const envelope = this.loadEnvelope();
+      if (!envelope) return false;
 
+      const key = await VaultCrypto.unlockEnvelopeWithPassword(envelope, password);
+      if (!key) {
+        return false;
+      }
+
+      this.masterKey = key;
       this.isUnlocked = true;
-      await this.loadItemsFromStore();
+      await this.loadAndDecryptVaultItems();
       this.notify();
       return true;
     } catch {
@@ -179,29 +204,13 @@ class VaultService {
     }
   }
 
-  public async verifyPassword(pass: string): Promise<boolean> {
-    try {
-      const stored = localStorage.getItem(VAULT_PASS_KEY);
-      if (!stored) return false;
-      const hash = await hashString(pass);
-      const isValid = hash === stored;
-      if (isValid) {
-        this.isUnlocked = true;
-        await this.loadItemsFromStore();
-        this.notify();
-      }
-      return isValid;
-    } catch {
-      return false;
-    }
-  }
-
   public async verifyRecovery(recoveryA: string): Promise<boolean> {
     try {
-      const storedAnsHash = localStorage.getItem(VAULT_RECOVERY_A_KEY);
-      if (!storedAnsHash) return false;
-      const inputHash = await hashString(recoveryA.trim().toLowerCase());
-      return inputHash === storedAnsHash;
+      const envelope = this.loadEnvelope();
+      if (!envelope || !envelope.recoveryAnswerHash) return false;
+      const cleanAnswer = recoveryA.trim().toLowerCase();
+      const hash = await VaultCrypto.hashString(cleanAnswer);
+      return hash === envelope.recoveryAnswerHash;
     } catch {
       return false;
     }
@@ -209,14 +218,17 @@ class VaultService {
 
   public async resetPasswordWithRecovery(recoveryA: string, newPass: string): Promise<boolean> {
     try {
-      const isValidAns = await this.verifyRecovery(recoveryA);
-      if (!isValidAns) return false;
+      const envelope = this.loadEnvelope();
+      if (!envelope) return false;
 
-      const newPassHash = await hashString(newPass);
-      localStorage.setItem(VAULT_PASS_KEY, newPassHash);
+      const key = await VaultCrypto.unlockEnvelopeWithRecovery(envelope, recoveryA);
+      if (!key) return false;
 
+      const updatedEnvelope = await VaultCrypto.rewrapEnvelope(key, envelope, newPass);
+      this.saveEnvelope(updatedEnvelope);
+      this.masterKey = key;
       this.isUnlocked = true;
-      await this.loadItemsFromStore();
+      await this.loadAndDecryptVaultItems();
       this.notify();
       return true;
     } catch {
@@ -226,12 +238,15 @@ class VaultService {
 
   public async changePassword(oldPass: string, newPass: string): Promise<boolean> {
     try {
-      const isOldValid = await this.verifyPassword(oldPass);
-      if (!isOldValid) return false;
+      const envelope = this.loadEnvelope();
+      if (!envelope) return false;
 
-      const newPassHash = await hashString(newPass);
-      localStorage.setItem(VAULT_PASS_KEY, newPassHash);
+      const key = await VaultCrypto.unlockEnvelopeWithPassword(envelope, oldPass);
+      if (!key) return false;
 
+      const updatedEnvelope = await VaultCrypto.rewrapEnvelope(key, envelope, newPass);
+      this.saveEnvelope(updatedEnvelope);
+      this.masterKey = key;
       this.isUnlocked = true;
       this.notify();
       return true;
@@ -241,50 +256,67 @@ class VaultService {
   }
 
   public getUnlockedStatus(): boolean {
-    return this.isUnlocked;
+    return this.isUnlocked && this.masterKey !== null;
   }
 
   public lockVault() {
     this.isUnlocked = false;
-    this.isPickingFile = false;
+    this.masterKey = null;
+    this.clearAllObjectUrls();
     this.cachedItems = [];
     this.notify();
   }
 
-  public subscribe(cb: (unlocked: boolean) => void) {
+  public subscribe(cb: (unlocked: boolean) => void): () => void {
     this.subscribers.add(cb);
-    cb(this.isUnlocked);
+    cb(this.getUnlockedStatus());
     return () => {
       this.subscribers.delete(cb);
     };
   }
 
   private notify() {
+    const status = this.getUnlockedStatus();
     for (const cb of this.subscribers) {
-      cb(this.isUnlocked);
+      try {
+        cb(status);
+      } catch (e) {
+        console.error('Vault subscriber callback error:', e);
+      }
     }
   }
 
-  // FOLDERS MANAGEMENT
+  private clearAllObjectUrls() {
+    for (const url of this.activeObjectUrls) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+    }
+    this.activeObjectUrls.clear();
+  }
+
+  // =========================================================================
+  // FOLDER MANAGEMENT
+  // =========================================================================
   public getFolders(): VaultFolder[] {
-    if (!this.isUnlocked) return [];
+    if (!this.getUnlockedStatus()) return [];
     try {
       const raw = localStorage.getItem(VAULT_FOLDERS_KEY);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
-      return parsed.filter(f => f && f.id && f.name);
+      return parsed.filter((f) => f && f.id && f.name);
     } catch {
       return [];
     }
   }
 
   public createFolder(name: string): VaultFolder | null {
-    if (!this.isUnlocked || !name.trim()) return null;
+    if (!this.getUnlockedStatus() || !name.trim()) return null;
     try {
       const folders = this.getFolders();
       const newFolder: VaultFolder = {
-        id: 'folder-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
+        id: 'folder-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8),
         name: name.trim(),
         createdAt: Date.now(),
       };
@@ -297,10 +329,10 @@ class VaultService {
   }
 
   public renameFolder(folderId: string, newName: string): boolean {
-    if (!this.isUnlocked || !newName.trim()) return false;
+    if (!this.getUnlockedStatus() || !newName.trim()) return false;
     try {
       const folders = this.getFolders();
-      const folder = folders.find(f => f.id === folderId);
+      const folder = folders.find((f) => f.id === folderId);
       if (!folder) return false;
       folder.name = newName.trim();
       localStorage.setItem(VAULT_FOLDERS_KEY, JSON.stringify(folders));
@@ -311,176 +343,262 @@ class VaultService {
   }
 
   public deleteFolder(folderId: string): boolean {
-    if (!this.isUnlocked) return false;
+    if (!this.getUnlockedStatus()) return false;
     try {
       let folders = this.getFolders();
-      folders = folders.filter(f => f.id !== folderId);
+      folders = folders.filter((f) => f.id !== folderId);
       localStorage.setItem(VAULT_FOLDERS_KEY, JSON.stringify(folders));
 
-      this.cachedItems = this.cachedItems.map(item => {
+      // Reset items in this folder to root
+      this.cachedItems = this.cachedItems.map((item) => {
         if (item.folderId === folderId) {
+          dbGetStoredItem(item.id).then((stored) => {
+            if (stored) {
+              stored.folderId = undefined;
+              dbSaveStoredItem(stored);
+            }
+          });
           return { ...item, folderId: undefined };
         }
         return item;
       });
-      this.saveItemsToLocalStorageFallback();
       return true;
     } catch {
       return false;
     }
   }
 
-  // VAULT ITEMS MANAGEMENT
-  private async loadItemsFromStore(): Promise<VaultItem[]> {
-    if (!this.isUnlocked) {
+  // =========================================================================
+  // VAULT ITEMS & ENCRYPTION / DECRYPTION
+  // =========================================================================
+  private async loadAndDecryptVaultItems(): Promise<VaultItem[]> {
+    if (!this.getUnlockedStatus() || !this.masterKey) {
       this.cachedItems = [];
       return [];
     }
 
-    // First try IndexedDB
-    let items = await idbGetAllItems();
+    this.clearAllObjectUrls();
+    const storedList = await dbGetAllStoredItems();
+    const decryptedItems: VaultItem[] = [];
 
-    // Fallback or merge from localStorage if IndexedDB had no items
-    if (!items || items.length === 0) {
+    for (const stored of storedList) {
       try {
-        const raw = localStorage.getItem(VAULT_ITEMS_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            items = parsed.filter(item => item && item.id && item.dataUrl);
-            // Migrate to IndexedDB
-            items.forEach(item => idbSaveItem(item));
-          }
-        }
-      } catch {}
-    }
+        // Decrypt thumbnail if available for fast memory-efficient preview, else decrypt main payload
+        const targetToDecrypt = stored.encryptedThumbnail || stored.encryptedMedia;
+        const decryptedBuffer = await VaultCrypto.decryptData(targetToDecrypt, this.masterKey);
+        const blob = new Blob([decryptedBuffer], { type: targetToDecrypt.mimeType || 'image/jpeg' });
+        const objectUrl = URL.createObjectURL(blob);
+        this.activeObjectUrls.add(objectUrl);
 
-    // Auto-migration & validation for genuinely private storage on native Android
-    if (items && items.length > 0 && vaultStorageNative.isNative()) {
-      for (const item of items) {
-        try {
-          if (item.privatePath) {
-            // Verify file actually exists in app-private internal storage
-            const check = await vaultStorageNative.verifyFileExists(item.privatePath);
-            if (check.exists && check.webUrl) {
-              item.dataUrl = check.webUrl;
-            } else if (item.dataUrl && !item.dataUrl.startsWith('http://localhost/_capacitor_file_')) {
-              // Re-save if file was missing from internal storage
-              const migrated = await vaultStorageNative.saveFileToPrivateVault({
-                base64Data: item.dataUrl,
-                fileName: item.name,
-                mimeType: item.type === 'video' ? 'video/mp4' : 'image/jpeg',
-              });
-              if (migrated && migrated.verified) {
-                item.privatePath = migrated.filePath;
-                item.dataUrl = migrated.webUrl;
-                item.size = migrated.size || item.size;
-                await idbSaveItem(item);
-              }
-            }
-          } else if (item.dataUrl) {
-            // Legacy item stored as base64 or public URI: migrate into private internal storage
-            const isPublicUri = item.dataUrl.startsWith('content://') || item.dataUrl.startsWith('file://');
-            const migrated = await vaultStorageNative.saveFileToPrivateVault({
-              uri: isPublicUri ? item.dataUrl : undefined,
-              base64Data: isPublicUri ? undefined : item.dataUrl,
-              fileName: item.name,
-              mimeType: item.type === 'video' ? 'video/mp4' : 'image/jpeg',
-            });
-            if (migrated && migrated.verified) {
-              item.privatePath = migrated.filePath;
-              item.dataUrl = migrated.webUrl;
-              item.size = migrated.size || item.size;
-              await idbSaveItem(item);
-            }
-          }
-        } catch (migErr) {
-          console.warn('Migration error for vault item:', item.id, migErr);
-        }
+        decryptedItems.push({
+          id: stored.id,
+          folderId: stored.folderId,
+          type: stored.type,
+          dataUrl: objectUrl,
+          name: stored.name,
+          dateAdded: stored.dateAdded,
+          size: stored.size,
+          mimeType: stored.mimeType,
+        });
+      } catch (err) {
+        console.warn('Could not decrypt item:', stored.id, err);
       }
     }
 
-    this.cachedItems = items || [];
+    this.cachedItems = decryptedItems;
     return this.cachedItems;
   }
 
   public getVaultItems(): VaultItem[] {
-    if (!this.isUnlocked) return [];
+    if (!this.getUnlockedStatus()) return [];
     return this.cachedItems;
   }
 
-  public async addVaultItem(item: {
-    folderId?: string;
-    type: 'image' | 'video' | 'file';
-    dataUrl: string;
-    uri?: string;
-    name: string;
-    size?: number;
-    privatePath?: string;
-    isMove?: boolean;
-  }): Promise<boolean> {
-    if (!this.isUnlocked) return false;
+  /**
+   * Generates a small thumbnail from image buffer
+   */
+  private async generateImageThumbnail(arrayBuffer: ArrayBuffer, mimeType: string): Promise<ArrayBuffer | null> {
+    if (!mimeType.startsWith('image/')) return null;
+    return new Promise((resolve) => {
+      try {
+        const blob = new Blob([arrayBuffer], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          const maxDim = 320;
+          let w = img.width;
+          let h = img.height;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(null);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          canvas.toBlob(
+            async (thumbBlob) => {
+              if (thumbBlob) {
+                const thumbBuf = await thumbBlob.arrayBuffer();
+                resolve(thumbBuf);
+              } else {
+                resolve(null);
+              }
+            },
+            'image/jpeg',
+            0.75
+          );
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          resolve(null);
+        };
+        img.src = url;
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  /**
+   * Imports and Encrypts a File into Vault
+   * 1. Read binary bytes
+   * 2. Encrypt with AES-256-GCM using Master Vault Key
+   * 3. Save only encrypted data in IndexedDB
+   * 4. Decrypt in-memory object URL for immediate display in Vault
+   */
+  public async addVaultFile(
+    fileOrBlob: Blob | File,
+    name: string,
+    folderId?: string
+  ): Promise<boolean> {
+    if (!this.getUnlockedStatus() || !this.masterKey) return false;
+
+    let rawBuffer: ArrayBuffer | null = null;
     try {
-      let finalPath = item.privatePath;
-      let finalWebUrl = item.dataUrl;
-      let finalSize = item.size || 0;
+      rawBuffer = await fileOrBlob.arrayBuffer();
+      const mimeType = fileOrBlob.type || (name.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg');
+      const isVideo = mimeType.startsWith('video');
+      const isImage = mimeType.startsWith('image');
+      const itemType: 'image' | 'video' | 'file' = isVideo ? 'video' : isImage ? 'image' : 'file';
 
-      // Ensure file is saved & verified inside private internal storage (/data/user/0/.../vault_media/)
-      if (!finalPath || !finalWebUrl.includes('_capacitor_file_')) {
-        const savedResult = await vaultStorageNative.saveFileToPrivateVault({
-          uri: item.uri,
-          base64Data: item.dataUrl,
-          fileName: item.name,
-          mimeType: item.type === 'video' ? 'video/mp4' : 'image/jpeg',
-          isMove: item.isMove,
-        });
+      // 1. Encrypt full resolution binary media
+      const encryptedMedia = await VaultCrypto.encryptData(rawBuffer, this.masterKey, mimeType);
 
-        if (!savedResult || !savedResult.verified) {
-          console.error('Failed to verify private vault file save');
-          return false;
+      // 2. Encrypt thumbnail for fast rendering
+      let encryptedThumbnail: EncryptedBlobData | undefined;
+      if (isImage) {
+        const thumbBuffer = await this.generateImageThumbnail(rawBuffer, mimeType);
+        if (thumbBuffer) {
+          encryptedThumbnail = await VaultCrypto.encryptData(thumbBuffer, this.masterKey, 'image/jpeg');
         }
-
-        finalPath = savedResult.filePath;
-        finalWebUrl = savedResult.webUrl;
-        finalSize = savedResult.size;
       }
 
-      const newItem: VaultItem = {
-        id: 'vault-item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
-        folderId: item.folderId,
-        type: item.type,
-        dataUrl: finalWebUrl,
-        name: item.name,
+      const itemId = 'vault-item-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+      const storedItem: StoredVaultItem = {
+        id: itemId,
+        folderId,
+        type: itemType,
+        name,
+        size: fileOrBlob.size,
+        mimeType,
         dateAdded: Date.now(),
-        size: finalSize,
-        privatePath: finalPath,
+        encryptedMedia,
+        encryptedThumbnail,
+      };
+
+      // 3. Save to private encrypted IndexedDB
+      const saved = await dbSaveStoredItem(storedItem);
+      if (!saved) {
+        throw new Error('Failed to persist encrypted record into database.');
+      }
+
+      // 4. Create in-memory preview object URL
+      const previewData = encryptedThumbnail || encryptedMedia;
+      const decryptedPreview = await VaultCrypto.decryptData(previewData, this.masterKey);
+      const previewBlob = new Blob([decryptedPreview], { type: previewData.mimeType });
+      const objectUrl = URL.createObjectURL(previewBlob);
+      this.activeObjectUrls.add(objectUrl);
+
+      const newItem: VaultItem = {
+        id: itemId,
+        folderId,
+        type: itemType,
+        dataUrl: objectUrl,
+        name,
+        dateAdded: storedItem.dateAdded,
+        size: storedItem.size,
+        mimeType,
       };
 
       this.cachedItems.unshift(newItem);
+      return true;
+    } catch (err) {
+      console.error('Error encrypting and adding vault file:', err);
+      return false;
+    } finally {
+      // Securely discard plaintext reference
+      rawBuffer = null;
+    }
+  }
 
-      // Save to IndexedDB (handles large images & videos without quota limits)
-      const idbSuccess = await idbSaveItem(newItem);
-
-      // Also attempt localStorage fallback
-      this.saveItemsToLocalStorageFallback();
-
-      return idbSuccess || true;
+  /**
+   * Helper for dataUrl string imports (e.g. legacy/camera captures)
+   */
+  public async addVaultItem(options: {
+    folderId?: string;
+    type?: 'image' | 'video' | 'file';
+    dataUrl: string;
+    name: string;
+    size?: number;
+  }): Promise<boolean> {
+    if (!this.getUnlockedStatus() || !this.masterKey) return false;
+    try {
+      const res = await fetch(options.dataUrl);
+      const blob = await res.blob();
+      return await this.addVaultFile(blob, options.name, options.folderId);
     } catch (e) {
-      console.error('Error adding vault item:', e);
+      console.error('Error importing dataUrl into vault:', e);
       return false;
     }
   }
 
-  public async deleteVaultItem(id: string): Promise<boolean> {
-    if (!this.isUnlocked) return false;
+  /**
+   * Decrypts the full original media (full resolution image or video) for full-screen viewer
+   */
+  public async getDecryptedFullMediaUrl(itemId: string): Promise<string | null> {
+    if (!this.getUnlockedStatus() || !this.masterKey) return null;
     try {
-      const itemToDelete = this.cachedItems.find(i => i.id === id);
-      if (itemToDelete?.privatePath) {
-        await vaultStorageNative.deletePrivateFile(itemToDelete.privatePath);
-      }
-      this.cachedItems = this.cachedItems.filter(i => i.id !== id);
-      await idbDeleteItem(id);
-      this.saveItemsToLocalStorageFallback();
+      const stored = await dbGetStoredItem(itemId);
+      if (!stored || !stored.encryptedMedia) return null;
+
+      const decryptedBuffer = await VaultCrypto.decryptData(stored.encryptedMedia, this.masterKey);
+      const blob = new Blob([decryptedBuffer], { type: stored.mimeType || stored.encryptedMedia.mimeType });
+      const fullUrl = URL.createObjectURL(blob);
+      this.activeObjectUrls.add(fullUrl);
+      return fullUrl;
+    } catch (e) {
+      console.error('Error decrypting full media:', e);
+      return null;
+    }
+  }
+
+  public async deleteVaultItem(id: string): Promise<boolean> {
+    if (!this.getUnlockedStatus()) return false;
+    try {
+      await dbDeleteStoredItem(id);
+      this.cachedItems = this.cachedItems.filter((i) => i.id !== id);
       return true;
     } catch {
       return false;
@@ -488,22 +606,10 @@ class VaultService {
   }
 
   public async deleteVaultItemsBatch(ids: string[]): Promise<boolean> {
-    if (!this.isUnlocked || !Array.isArray(ids)) return false;
+    if (!this.getUnlockedStatus() || !Array.isArray(ids)) return false;
     try {
-      const pathsToDelete: string[] = [];
-      this.cachedItems.forEach(item => {
-        if (ids.includes(item.id) && item.privatePath) {
-          pathsToDelete.push(item.privatePath);
-        }
-      });
-
-      if (pathsToDelete.length > 0) {
-        await vaultStorageNative.deletePrivateFilesBatch(pathsToDelete);
-      }
-
-      this.cachedItems = this.cachedItems.filter(i => !ids.includes(i.id));
-      await idbDeleteItemsBatch(ids);
-      this.saveItemsToLocalStorageFallback();
+      await dbDeleteStoredItemsBatch(ids);
+      this.cachedItems = this.cachedItems.filter((i) => !ids.includes(i.id));
       return true;
     } catch {
       return false;
@@ -511,17 +617,21 @@ class VaultService {
   }
 
   public moveItemsToFolder(ids: string[], targetFolderId?: string): boolean {
-    if (!this.isUnlocked || !Array.isArray(ids)) return false;
+    if (!this.getUnlockedStatus() || !Array.isArray(ids)) return false;
     try {
-      this.cachedItems = this.cachedItems.map(item => {
+      this.cachedItems = this.cachedItems.map((item) => {
         if (ids.includes(item.id)) {
           const updated = { ...item, folderId: targetFolderId };
-          idbSaveItem(updated);
+          dbGetStoredItem(item.id).then((stored) => {
+            if (stored) {
+              stored.folderId = targetFolderId;
+              dbSaveStoredItem(stored);
+            }
+          });
           return updated;
         }
         return item;
       });
-      this.saveItemsToLocalStorageFallback();
       return true;
     } catch {
       return false;
@@ -529,44 +639,23 @@ class VaultService {
   }
 
   public async copyItemsToFolder(ids: string[], targetFolderId?: string): Promise<boolean> {
-    if (!this.isUnlocked || !Array.isArray(ids)) return false;
+    if (!this.getUnlockedStatus() || !this.masterKey || !Array.isArray(ids)) return false;
     try {
-      const newCopies: VaultItem[] = [];
-      for (const item of this.cachedItems) {
-        if (ids.includes(item.id)) {
-          let newPrivatePath = item.privatePath;
-          let newWebUrl = item.dataUrl;
-
-          // Duplicate the private file in internal storage so deleting one copy does not affect the other
-          if (item.privatePath && vaultStorageNative.isNative()) {
-            try {
-              const dup = await vaultStorageNative.saveFileToPrivateVault({
-                uri: item.privatePath,
-                fileName: item.name,
-                mimeType: item.type === 'video' ? 'video/mp4' : 'image/jpeg',
-              });
-              if (dup && dup.verified) {
-                newPrivatePath = dup.filePath;
-                newWebUrl = dup.webUrl;
-              }
-            } catch {}
-          }
-
-          const copyItem: VaultItem = {
-            ...item,
-            id: 'vault-item-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+      for (const id of ids) {
+        const stored = await dbGetStoredItem(id);
+        if (stored) {
+          const newId = 'vault-item-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+          const copyStored: StoredVaultItem = {
+            ...stored,
+            id: newId,
             folderId: targetFolderId,
+            name: stored.name.includes('(Copy)') ? stored.name : `${stored.name} (Copy)`,
             dateAdded: Date.now(),
-            name: item.name.includes('(Copy)') ? item.name : `${item.name} (Copy)`,
-            privatePath: newPrivatePath,
-            dataUrl: newWebUrl,
           };
-          newCopies.push(copyItem);
-          await idbSaveItem(copyItem);
+          await dbSaveStoredItem(copyStored);
         }
       }
-      this.cachedItems = [...newCopies, ...this.cachedItems];
-      this.saveItemsToLocalStorageFallback();
+      await this.loadAndDecryptVaultItems();
       return true;
     } catch {
       return false;
@@ -574,25 +663,20 @@ class VaultService {
   }
 
   public renameVaultItem(id: string, newName: string): boolean {
-    if (!this.isUnlocked || !newName.trim()) return false;
+    if (!this.getUnlockedStatus() || !newName.trim()) return false;
     try {
-      const item = this.cachedItems.find(i => i.id === id);
+      const item = this.cachedItems.find((i) => i.id === id);
       if (!item) return false;
       item.name = newName.trim();
-      idbSaveItem(item);
-      this.saveItemsToLocalStorageFallback();
+      dbGetStoredItem(id).then((stored) => {
+        if (stored) {
+          stored.name = newName.trim();
+          dbSaveStoredItem(stored);
+        }
+      });
       return true;
     } catch {
       return false;
-    }
-  }
-
-  private saveItemsToLocalStorageFallback() {
-    try {
-      // Save metadata / small items to localStorage if quota allows
-      localStorage.setItem(VAULT_ITEMS_KEY, JSON.stringify(this.cachedItems));
-    } catch {
-      // Ignore quota exceeded errors as IndexedDB holds full data
     }
   }
 
@@ -601,23 +685,19 @@ class VaultService {
       const isValid = await this.verifyPassword(currentPass);
       if (!isValid) return null;
 
-      const items = this.getVaultItems();
+      const envelope = this.loadEnvelope();
       const folders = this.getFolders();
-      const passHash = localStorage.getItem(VAULT_PASS_KEY);
-      const recoveryQ = localStorage.getItem(VAULT_RECOVERY_Q_KEY);
-      const recoveryAHash = localStorage.getItem(VAULT_RECOVERY_A_KEY);
+      const storedItems = await dbGetAllStoredItems();
 
-      const backupPayload = {
-        version: 3,
+      const payload = {
+        version: 4,
         createdAt: Date.now(),
-        passHash,
-        recoveryQ,
-        recoveryAHash,
+        envelope,
         folders,
-        items,
+        items: storedItems,
       };
 
-      return JSON.stringify(backupPayload);
+      return JSON.stringify(payload);
     } catch {
       return null;
     }
@@ -626,31 +706,27 @@ class VaultService {
   public async restoreBackup(backupJsonString: string, currentPass: string): Promise<boolean> {
     try {
       const parsed = JSON.parse(backupJsonString);
-      if (!parsed || !parsed.passHash || !Array.isArray(parsed.items)) {
-        return false;
-      }
+      if (!parsed || !parsed.envelope) return false;
 
-      const passHash = await hashString(currentPass);
-      if (passHash !== parsed.passHash) {
-        return false;
-      }
+      const key = await VaultCrypto.unlockEnvelopeWithPassword(parsed.envelope, currentPass);
+      if (!key) return false;
 
-      localStorage.setItem(VAULT_PASS_KEY, parsed.passHash);
-      if (parsed.folders && Array.isArray(parsed.folders)) {
+      this.saveEnvelope(parsed.envelope);
+      if (Array.isArray(parsed.folders)) {
         localStorage.setItem(VAULT_FOLDERS_KEY, JSON.stringify(parsed.folders));
       }
-      if (parsed.recoveryQ) localStorage.setItem(VAULT_RECOVERY_Q_KEY, parsed.recoveryQ);
-      if (parsed.recoveryAHash) localStorage.setItem(VAULT_RECOVERY_A_KEY, parsed.recoveryAHash);
 
-      // Restore items into IndexedDB
-      for (const item of parsed.items) {
-        if (item && item.id && item.dataUrl) {
-          await idbSaveItem(item);
+      if (Array.isArray(parsed.items)) {
+        for (const item of parsed.items) {
+          if (item && item.id && item.encryptedMedia) {
+            await dbSaveStoredItem(item);
+          }
         }
       }
 
+      this.masterKey = key;
       this.isUnlocked = true;
-      await this.loadItemsFromStore();
+      await this.loadAndDecryptVaultItems();
       this.notify();
       return true;
     } catch {

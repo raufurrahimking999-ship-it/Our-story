@@ -57,6 +57,7 @@ jobs:
             npx cap add android
           fi
           npx cap sync android
+          npm run generate-icons
 
       - name: Grant Execute Permission for Gradlew
         run: chmod +x android/gradlew

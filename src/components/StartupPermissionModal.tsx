@@ -18,6 +18,8 @@ export const StartupPermissionModal: React.FC<StartupPermissionModalProps> = ({ 
           await localMusicService.requestPermissionAndScan();
           await notificationService.init();
           permissionService.markSetupCompleted();
+        } else {
+          await localMusicService.requestPermissionAndScan();
         }
       } catch (err) {
         console.error('Error in startup permissions:', err);
